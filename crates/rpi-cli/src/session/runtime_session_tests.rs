@@ -196,3 +196,25 @@ async fn importing_a_torn_tail_repairs_only_the_private_copy() {
         .unwrap()
         .ends_with("{\"kind\":"));
 }
+
+#[tokio::test]
+async fn fork_takes_a_session_file_outside_the_session_directory() {
+    let temporary = tempfile::tempdir().unwrap();
+    let cwd = temporary.path().to_string_lossy();
+    let source_root = temporary.path().join("source");
+    let source = create_jsonl_session(&source_root, &cwd).await.unwrap();
+    source.set_name(Some("parent")).await.unwrap();
+    let parent_id = source.get_metadata().await.unwrap().id;
+    // A caller copies the parent file elsewhere and forks from that copy.
+    let copy = temporary.path().join("elsewhere").join("parent.jsonl");
+    std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
+    std::fs::copy(list_session_files_sync(&source_root).remove(0), &copy).unwrap();
+    let root = temporary.path().join("sessions");
+    let forked = fork_session_at_launch(&copy.to_string_lossy(), &root, &cwd)
+        .await
+        .unwrap_or_else(|error| panic!("fork from a file path failed: {error}"));
+    let forked_meta = forked.get_metadata().await.unwrap();
+    assert_ne!(forked_meta.id, parent_id);
+    assert_eq!(forked.get_name().await.unwrap().as_deref(), Some("parent"));
+    assert_eq!(list_session_files_sync(&root).len(), 1);
+}

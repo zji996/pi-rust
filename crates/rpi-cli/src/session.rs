@@ -2320,20 +2320,28 @@ async fn fork_session_at_launch(
         clock: Arc::new(SystemClock),
         ids: Arc::new(DefaultIdGenerator::new()),
     });
-    let metas = repo
-        .list_typed(&rpi_harness::session::jsonl::JsonlSessionListOptions::default())
-        .await
-        .map_err(|e| BuildError::SessionDir(format!("list sessions: {e}")))?;
-    let source_meta = metas
-        .iter()
-        .find(|m| m.id == *source || m.path.contains(source) || source.contains(&m.id))
-        .ok_or_else(|| BuildError::SessionNotFound {
-            requested: format!("--fork {source}"),
-            dir: dir.display().to_string(),
-        })?;
+    // A session file given by path forks from wherever it lives (pi parity:
+    // `pi --fork <file>` takes any session file); an id or a name fragment is
+    // looked up in the session directory.
+    let source_meta = match session_metadata_at(Path::new(source)) {
+        Some(meta) => meta,
+        None => {
+            let metas = repo
+                .list_typed(&rpi_harness::session::jsonl::JsonlSessionListOptions::default())
+                .await
+                .map_err(|e| BuildError::SessionDir(format!("list sessions: {e}")))?;
+            metas
+                .into_iter()
+                .find(|m| m.id == *source || m.path.contains(source) || source.contains(&m.id))
+                .ok_or_else(|| BuildError::SessionNotFound {
+                    requested: format!("--fork {source}"),
+                    dir: dir.display().to_string(),
+                })?
+        }
+    };
     let fork_storage = repo
         .fork_typed(
-            source_meta,
+            &source_meta,
             &JsonlSessionCreateOptions {
                 id: None,
                 parent_session_id: Some(source_meta.id.clone()),
@@ -2347,6 +2355,34 @@ async fn fork_session_at_launch(
     claim_session_lock(&fork_storage.jsonl_metadata().path).map_err(BuildError::SessionOpen)?;
     let storage_arc: Arc<dyn SessionStorage> = Arc::new(fork_storage);
     Ok(Session::new(storage_arc, None))
+}
+
+/// The metadata of the JSONL session file at `path`, or `None` when `path` is
+/// not a readable session file.
+fn session_metadata_at(path: &Path) -> Option<rpi_harness::session::jsonl::JsonlSessionMetadata> {
+    use rpi_harness::session::jsonl::codec::{metadata_from_header, parse_header};
+    use std::io::BufRead;
+
+    let file = std::fs::File::open(path).ok()?;
+    let modified_at = file
+        .metadata()
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as i64;
+    let mut first_line = String::new();
+    std::io::BufReader::new(file)
+        .read_line(&mut first_line)
+        .ok()?;
+    let header = parse_header(first_line.trim_end()).ok()?;
+    let path = std::fs::canonicalize(path).ok()?;
+    Some(metadata_from_header(
+        &header,
+        &path.to_string_lossy(),
+        modified_at,
+    ))
 }
 
 /// Errors from [`open_session_by_id`], split so the CLI can map them to
