@@ -26,7 +26,7 @@ use crate::file_mutation_queue::{with_file_mutation_queue, MutatingEnv};
 use crate::path_utils::resolve_tool_path;
 use crate::tools::tool_context::ExecutionToolContext;
 
-/// Input for the write tool. Mirrors TS `WriteToolInput`.
+// Input for the write tool. Mirrors TS `WriteToolInput`.
 #[derive(Debug, Clone, JsonSchema, Deserialize)]
 pub struct WriteInput {
     /// Path to the file to write (relative or absolute).

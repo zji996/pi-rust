@@ -35,7 +35,7 @@ use crate::truncate::{format_size, TruncationResult, DEFAULT_MAX_BYTES, DEFAULT_
 /// Throttle window for bash `on_update` flushes. Mirrors `BASH_UPDATE_THROTTLE_MS`.
 const BASH_UPDATE_THROTTLE_MS: u64 = 2_000;
 
-/// Input for the bash tool. Mirrors TS `BashToolInput`. `timeout` is in seconds.
+// Input for the bash tool. Mirrors TS `BashToolInput`. `timeout` is in seconds.
 #[derive(Debug, Clone, JsonSchema, Deserialize)]
 pub struct BashInput {
     /// Bash command to execute.
