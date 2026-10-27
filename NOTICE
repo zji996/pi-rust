@@ -22,3 +22,16 @@ Third-party dependencies
 Runtime dependencies and their licenses are listed by `cargo metadata` and on
 each crate's crates.io page. Vendored or copied source, where it exists, keeps
 its original attribution in the file header.
+
+Copied source
+-------------
+
+    pi-semantic-edit — https://github.com/k3-2o/pi-semantic-edit
+    Copyright (c) 2026 K2
+    Licensed under the MIT License.
+
+The semantic matcher behind the built-in `edit` tool
+(`crates/rpi-tools/src/tools/semantic_edit/`) is a Rust port of the
+`pi-semantic-edit` domain layer (`src/domain/*.ts`) plus its tool description
+and input schema (`src/pi/tool.ts`, `src/pi/schema.ts`). The ported files keep
+the upstream attribution in their module docs.

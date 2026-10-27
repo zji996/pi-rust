@@ -12,6 +12,7 @@ pub mod image;
 pub mod ls;
 pub mod powershell;
 pub mod read;
+pub mod semantic_edit;
 pub mod tool_context;
 pub mod write;
 

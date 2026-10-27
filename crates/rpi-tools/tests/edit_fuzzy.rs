@@ -167,7 +167,7 @@ async fn rejects_missing_and_duplicate_target() {
         AgentError::Tool(m) => m,
         other => panic!("expected Tool error, got {other:?}"),
     };
-    assert!(m1.contains("Could not find the exact text"), "got: {m1}");
+    assert!(m1.contains("Text not found in edit.txt"), "got: {m1}");
 
     let err_dup = run_edit(
         tool,
@@ -179,7 +179,13 @@ async fn rejects_missing_and_duplicate_target() {
         AgentError::Tool(m) => m,
         other => panic!("expected Tool error, got {other:?}"),
     };
-    assert!(m2.contains("Found 3 occurrences"), "got: {m2}");
+    // The semantic matcher reports the count plus every occurrence's line
+    // position (TS `ambiguousError`) instead of the old "N occurrences" line.
+    assert!(
+        m2.contains("Text found 3 times at line 1, line 1, line 1 in edit.txt"),
+        "got: {m2}"
+    );
+    assert!(m2.contains("set replaceAll: true"), "got: {m2}");
 }
 
 #[tokio::test]
@@ -247,8 +253,10 @@ async fn rejects_noop_edit() {
         AgentError::Tool(m) => m,
         other => panic!("expected Tool error, got {other:?}"),
     };
+    // The TS validation error for an identical oldText/newText pair, used
+    // verbatim by the semantic matcher.
     assert!(
-        m.to_lowercase().contains("no change") || m.to_lowercase().contains("no-op"),
+        m.contains("oldText and newText are identical; this edit does nothing."),
         "got: {m}"
     );
 }

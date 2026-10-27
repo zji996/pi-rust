@@ -1,14 +1,18 @@
-//! Mirrors `packages/agent/src/harness/tools/edit.ts` — the built-in `edit`
-//! `AgentTool`. Performs exact-text replacements (with fuzzy fallback) on a
-//! single file, serialized per canonical path via the file-mutation-queue.
+//! The built-in `edit` `AgentTool`. Performs text replacements on a single
+//! file, serialized per canonical path via the file-mutation-queue.
+//!
+//! The tool description / `edits[]` field descriptions come from
+//! `pi-semantic-edit` (`src/pi/tool.ts`, `src/pi/schema.ts`); the matcher behind
+//! them is the ported 10-pass chain in
+//! [`crate::tools::semantic_edit`] (MIT, see that module's docs and `NOTICE`).
 //!
 //! `prepare_arguments` folds legacy top-level `oldText`/`newText` into the
 //! `edits[]` array and parses a JSON-string `edits`, mirroring
 //! `prepareEditArguments`. The execute path runs:
 //! `fileInfo` → `readTextFile` → `stripBom` → `detectLineEnding` →
-//! `normalizeToLF` → `applyEditsToNormalizedContent` → `restoreLineEndings` →
-//! `writeFile`, with `generateDiffString` + `generateUnifiedPatch` in the
-//! details.
+//! `normalizeToLF` → [`apply_blocks`] (semantic matcher) →
+//! `restoreLineEndings` → `writeFile`, with `generateDiffString` +
+//! `generateUnifiedPatch` in the details.
 
 use std::sync::Arc;
 
@@ -28,18 +32,24 @@ use crate::error::{FileError, FileErrorCode};
 use crate::file_mutation_queue::{with_file_mutation_queue, MutatingEnv};
 use crate::path_utils::resolve_tool_path;
 use crate::tools::edit_diff::{
-    apply_edits_to_normalized_content, detect_line_ending, generate_diff_string,
-    generate_unified_patch, normalize_to_lf, restore_line_endings, strip_bom, ApplyResult,
-    ReplaceEdit,
+    detect_line_ending, generate_diff_string, generate_unified_patch, normalize_to_lf,
+    restore_line_endings, strip_bom,
+};
+use crate::tools::semantic_edit::{
+    apply_blocks, coherence_check, ApplyBlocksResult, EditRequest as SemanticEditRequest,
 };
 use crate::tools::tool_context::ExecutionToolContext;
 
-/// Input for the edit tool. Mirrors TS `EditToolInput`.
+/// Input for the edit tool. Mirrors TS `EditToolInput` (pi-semantic-edit
+/// `src/pi/schema.ts`).
 #[derive(Debug, Clone, JsonSchema, Deserialize)]
 pub struct EditInput {
-    /// Path to the file to edit (relative or absolute).
+    /// Path to the file to edit (relative or absolute)
     pub path: String,
-    /// One or more targeted replacements.
+    /// One or more targeted replacements. Each edit is matched against the
+    /// original file, not incrementally. Do not include overlapping or nested
+    /// edits. If two changes touch the same block or nearby lines, merge them
+    /// into one edit instead.
     pub edits: Vec<ReplaceEditJson>,
 }
 
@@ -47,11 +57,16 @@ pub struct EditInput {
 #[derive(Debug, Clone, JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReplaceEditJson {
-    /// Exact text for one targeted replacement. Must be unique in the original
-    /// file and must not overlap with any other edit's `oldText` in the same call.
+    /// Exact text for one targeted replacement. It must be unique in the
+    /// original file unless replaceAll is set, and must not overlap with any
+    /// other edits[].oldText in the same call.
     pub old_text: String,
     /// Replacement text for this targeted edit.
     pub new_text: String,
+    /// Replace every occurrence of the matched text instead of failing on
+    /// ambiguity (rename-everywhere edits). Default false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replace_all: Option<bool>,
 }
 
 /// Structured details for the edit tool. Mirrors TS `EditToolDetails`.
@@ -74,7 +89,7 @@ impl EditTool {
         let params = schemars::schema_for!(EditInput);
         Tool {
             name: "edit".to_string(),
-            description: "Edit a single file using exact text replacement. Before editing, use read to inspect the current target region and copy oldText from that output, preserving whitespace and excluding display line numbers or truncation markers. If matching fails, read the target region again and rebuild the edit from the current content before retrying. Every edits[].oldText must match a unique, non-overlapping region of the original file. Each edit is matched against the same original file snapshot, not incrementally after earlier edits. Do not include overlapping or nested edits. If two changes affect the same block or nearby lines, merge them into one edit. Choose enough surrounding lines from the read output to make each oldText occur exactly once in the entire file; do not use a repeated statement or short identifier alone. If multiple matches are reported, use their line numbers and context to expand oldText for the intended location before retrying. Use camelCase oldText/newText fields.".to_string(),
+            description: "Edit a file by providing exact text replacements (edits[]), each with oldText and newText. The matcher tolerates whitespace, indentation, escape, and formatting drift between the oldText and the actual file content (10-pass fuzzy chain). If the text matches multiple locations, the edit fails with the line positions and asks for more context — it never guesses. Set replaceAll: true on an edit to replace every occurrence (e.g. renaming a variable). Format:\n{ \"path\": \"src/foo.ts\", \"edits\": [{ \"oldText\": \"let x = 1;\", \"newText\": \"let x = 2;\" }] }".to_string(),
             parameters: rpi_ai::types::Schema::new(
                 serde_json::to_value(params).unwrap_or_default(),
             ),
@@ -128,17 +143,18 @@ impl AgentTool for EditTool {
                 "Edit tool input is invalid. edits must contain at least one replacement.".into(),
             ));
         }
-        let edits: Vec<ReplaceEdit> = input
-            .edits
-            .into_iter()
-            .map(|e| ReplaceEdit {
-                old_text: e.old_text,
-                new_text: e.new_text,
-            })
-            .collect();
         let path = input.path.clone();
         let path_for_msg = path.clone();
-        let edits_count = edits.len();
+        let edits: Vec<SemanticEditRequest> = input
+            .edits
+            .into_iter()
+            .map(|e| SemanticEditRequest {
+                path: path.clone(),
+                old_text: e.old_text,
+                new_text: e.new_text,
+                replace_all: e.replace_all.unwrap_or(false),
+            })
+            .collect();
 
         let abs = resolve_tool_path(self.env.as_env(), &path, Some(&signal))
             .await
@@ -148,11 +164,14 @@ impl AgentTool for EditTool {
         let env = self.env.clone();
         let env_ref = env.clone();
         let abs_for_closure = abs_str.clone();
-        let apply_result: Result<ApplyResult, FileError> = with_file_mutation_queue(
+        let apply_result: Result<(ApplyBlocksResult, Vec<String>), FileError> = with_file_mutation_queue(
             &*env_ref,
             &abs_str,
             &signal,
-            move |cancel: &CancellationToken| -> BoxFuture<'_, Result<ApplyResult, FileError>> {
+            move |cancel: &CancellationToken| -> BoxFuture<
+                '_,
+                Result<(ApplyBlocksResult, Vec<String>), FileError>,
+            > {
                 let env = env.clone();
                 let edits = edits.clone();
                 let path = path.clone();
@@ -178,7 +197,9 @@ impl AgentTool for EditTool {
                     let content = bom_res.text;
                     let original_ending = detect_line_ending(content);
                     let normalized = normalize_to_lf(content);
-                    let apply = apply_edits_to_normalized_content(&normalized, &edits, &path)?;
+                    let apply = apply_blocks(&normalized, &edits, &path)
+                        .map_err(|e| e.into_file_error())?;
+                    let warnings = coherence_check(&apply.new_content);
                     check_abort(cancel)?;
 
                     let final_content = format!(
@@ -189,14 +210,14 @@ impl AgentTool for EditTool {
                         .write_file(&abs_str, FileContent::Text(final_content), Some(cancel))
                         .await?;
                     check_abort(cancel)?;
-                    Ok(apply)
+                    Ok((apply, warnings))
                 }
                 .boxed()
             },
         )
         .await;
 
-        let apply = apply_result.map_err(file_err_to_agent)?;
+        let (apply, warnings) = apply_result.map_err(file_err_to_agent)?;
         let diff = generate_diff_string(&apply.base_content, &apply.new_content, 4);
         let patch = generate_unified_patch(&path_for_msg, &apply.base_content, &apply.new_content);
 
@@ -207,10 +228,19 @@ impl AgentTool for EditTool {
         })
         .unwrap_or(serde_json::Value::Null);
 
+        let mut text = format!(
+            "Successfully replaced {} block(s) in {path_for_msg}.",
+            apply.replacements
+        );
+        if !warnings.is_empty() {
+            text.push_str("\nCoherence warnings:");
+            for warning in &warnings {
+                text.push_str(&format!("\n  - {warning}"));
+            }
+        }
+
         Ok(AgentToolResult {
-            content: vec![TextContentOrImage::text(format!(
-                "Successfully replaced {edits_count} block(s) in {path_for_msg}."
-            ))],
+            content: vec![TextContentOrImage::text(text)],
             details,
             ..Default::default()
         })
@@ -274,7 +304,17 @@ fn prepare_edit_arguments(input: serde_json::Value) -> serde_json::Value {
         Some(serde_json::Value::Array(a)) => a,
         _ => Vec::new(),
     };
-    edits_arr.push(serde_json::json!({ "oldText": old_text, "newText": new_text }));
+    // Legacy top-level `replaceAll` applies to the folded edit, mirroring
+    // `normalizeEditArgs`'s top-level `oldText`/`newText` shape.
+    let legacy_replace_all = match args.get("replaceAll") {
+        Some(serde_json::Value::Bool(flag)) => Some(*flag),
+        _ => None,
+    };
+    let mut folded = serde_json::json!({ "oldText": old_text, "newText": new_text });
+    if let Some(flag) = legacy_replace_all {
+        folded["replaceAll"] = serde_json::Value::Bool(flag);
+    }
+    edits_arr.push(folded);
     args.remove("oldText");
     args.remove("newText");
     args.insert("edits".to_string(), serde_json::Value::Array(edits_arr));
