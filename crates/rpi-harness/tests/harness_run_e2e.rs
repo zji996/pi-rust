@@ -229,6 +229,21 @@ fn record_runtime_events(harness: &AgentHarness) -> Arc<Mutex<Vec<HarnessEvent>>
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_turn_carries_the_session_id_for_prompt_caching() {
+    let script = FauxScript::new().with_tool_call("bash", serde_json::json!({ "command": "true" }));
+    script.append_responses(vec![FauxStep::text("done")]);
+    let (harness, provider, _) = harness_with(script).await;
+
+    harness
+        .prompt_text("run it", vec![])
+        .await
+        .expect("prompt completes");
+
+    let ids = provider.state().session_ids.lock().unwrap().clone();
+    assert_eq!(ids, vec![Some("e2e".to_string()); 2]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn full_run_with_write_tool_call_completes_and_persists() {
     // Script:
     //   turn 1 — assistant emits a `write` tool call

@@ -331,6 +331,8 @@ impl FauxScript {
 #[derive(Debug, Default)]
 pub struct FauxProviderState {
     pub call_count: AtomicUsize,
+    /// The `session_id` of each request, in call order.
+    pub session_ids: Mutex<Vec<Option<String>>>,
 }
 
 /// The faux provider. Mirrors `createFauxCore`'s streaming surface; v1 exposes
@@ -504,6 +506,11 @@ impl Provider for FauxProvider {
 
         tokio::spawn(async move {
             state.call_count.fetch_add(1, Ordering::Relaxed);
+            state
+                .session_ids
+                .lock()
+                .unwrap()
+                .push(opts.session_id.clone());
 
             let step = script.shift();
             let mut message = match step {

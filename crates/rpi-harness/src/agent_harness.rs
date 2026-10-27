@@ -3967,7 +3967,9 @@ impl AgentHarness {
                 snap.retry.max_agent_delay_ms,
             )),
             cache_retention: snap.stream_options.cache_retention.unwrap_or_default(),
-            session_id: None,
+            // Providers key prompt caching and session affinity on it (TS
+            // `sessionId: this.session.id`); without it every turn may miss.
+            session_id: Some(self.session.storage().metadata().id),
             signal: signal.clone(),
         };
 
