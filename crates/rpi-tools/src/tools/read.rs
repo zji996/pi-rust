@@ -25,7 +25,7 @@ use crate::truncate::{
     format_size, truncate_head, TruncationOptions, TruncationResult, DEFAULT_MAX_BYTES,
     DEFAULT_MAX_LINES,
 };
-/// Input for the read tool. Mirrors TS `ReadToolInput`. `offset` is 1-indexed.
+// Input for the read tool. Mirrors TS `ReadToolInput`. `offset` is 1-indexed.
 #[derive(Debug, Clone, JsonSchema, Deserialize)]
 pub struct ReadInput {
     /// Path to the file to read (relative or absolute).

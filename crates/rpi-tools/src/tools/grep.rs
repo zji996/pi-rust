@@ -40,9 +40,9 @@ use crate::truncate::{
 /// Default max matches. Mirrors TS `grep.ts::DEFAULT_LIMIT`.
 const DEFAULT_LIMIT: u32 = 100;
 
-/// Input for the grep tool. Mirrors TS `GrepToolInput`. `camelCase` field names
-/// match the TS wire schema (so `ignoreCase`/`ignore_case` deserialization lines
-/// up with what the model emits).
+// Input for the grep tool. Mirrors TS `GrepToolInput`. `camelCase` field names
+// match the TS wire schema (so `ignoreCase`/`ignore_case` deserialization lines
+// up with what the model emits).
 #[derive(Debug, Clone, JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GrepInput {
