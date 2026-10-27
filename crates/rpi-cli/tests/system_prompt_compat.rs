@@ -13,7 +13,7 @@ fn published_two_argument_prompt_api_remains_callable() {
             assert!(text.contains(&format!("- {tool}")));
         }
         assert_eq!(
-            text.contains("Your own reasoning is carried back"),
+            text.contains("reasoning is carried back"),
             replayed
         );
         assert!(!text.contains("todo tool"));

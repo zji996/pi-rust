@@ -97,7 +97,7 @@ pub fn default_system_prompt_with_tools(
 ) -> String {
     let has = |name: &str| tools.iter().any(|tool| tool == name);
     let todo_hint = if has("todo") {
-        ", or the todo tool"
+        "\n  Keep the steps of multi-step work in the todo tool and mark them done as you go."
     } else {
         ""
     };
@@ -106,20 +106,21 @@ pub fn default_system_prompt_with_tools(
     // channels of anthropic/responses) the model *does* see its own reasoning
     // again, and claiming otherwise makes it re-derive and restate the plan
     // every turn — the re-plan symptom in `docs/llm-repetition-forensics.md`.
+    // One rule covers the plan, the todo tool and the anti-repetition line, so
+    // none of them is stated twice.
     let working_state_rule = if prior_reasoning_replayed {
         format!(
-            "- Keep a SHORT working plan visible (a few bullets{todo_hint}) and update it as you go.
-  Your own reasoning is carried back to you on the next turn, so do not re-derive it or restate
-  the whole plan: continue from the last unfinished step, and when a step lands, say which one.
-  Re-listing the same plan without acting on it is a bug, not progress."
+            "- Your reasoning is carried back to you on the next turn: do not re-derive it or restate
+  the plan. Continue from the last unfinished step, and when a step lands, say which one.{todo_hint}
+  Re-stating the same plan without acting on it is a bug, not progress."
         )
     } else {
-        "- Keep your working state in your VISIBLE replies, not only in reasoning. Reasoning is not
-  carried into your next turn: only the text you write and the tool output you produce come
-  back. Before each batch of tool calls, write one short line naming the task you are on and
-  what remains. When you finish a step, say which one is done. If you keep the plan only in
-  your head you will re-derive it from scratch every turn."
-            .to_string()
+        format!(
+            "- Your reasoning is not carried into your next turn; only your visible replies and tool
+  output come back. Before each batch of tool calls, write one short line naming the step you
+  are on and what remains, and say which step is done when it lands.{todo_hint}
+  Re-stating the same plan without acting on it is a bug, not progress."
+        )
     };
 
     let tool_lines = if tools.is_empty() {
@@ -135,49 +136,18 @@ pub fn default_system_prompt_with_tools(
             .join("\n")
     };
 
-    let mut guidelines = vec![
-        "- Reply in the SAME language the user is writing in. Detect the language of the user's
-  latest message (and, when it is too short to be sure, the working language of the
-  conversation so far) and use it for your prose replies. Mirror it unless the user
-  explicitly asks for a different language; only fall back to English when the
-  user's language cannot be determined."
-            .to_string(),
-        "- Be concise in your responses".to_string(),
-        "- Show file paths clearly when working with files".to_string(),
-        "- Prefer the smallest change that solves the problem".to_string(),
-    ];
-    if has("bash") {
-        guidelines.push(
-            "- The bash tool runs Bash, even on Windows. Use ls, find, rg, and POSIX pipelines;
-  do not pass PowerShell cmdlets such as Get-ChildItem, Select-Object, or Select-String.
-  If a powershell tool is available, use it for PowerShell commands."
-                .to_string(),
-        );
-    }
-    guidelines.push(working_state_rule);
-    if has("todo") {
-        guidelines.push(
-            "- Track multi-step work with the todo tool instead of re-listing the plan in prose: add the
-  steps once, then mark them done as you go. Re-stating the same plan without acting on it is
-  a bug, not progress."
-                .to_string(),
-        );
-    } else {
-        guidelines.push(
-            "- Re-stating the same plan without acting on it is a bug, not progress.".to_string(),
-        );
-    }
-    guidelines.push(
+    // Tool-specific rules (Bash on Windows, docs before guessing) live in the
+    // tool's own line or description, not here a second time.
+    let guidelines = [
+        "- Reply in the same language as the user's latest message (the conversation's language when
+  that message is too short to tell), unless the user asks for another.",
+        "- Be concise in your responses",
+        "- Show file paths clearly when working with files",
+        "- Prefer the smallest change that solves the problem",
+        &working_state_rule,
         "- Read only what you need. If a file or search result was already shown earlier in this
-  conversation, use it instead of fetching it again."
-            .to_string(),
-    );
-    if has("docs") {
-        guidelines.push(
-            "- When unsure about rpi commands, extensions, Pi package compatibility, or .rpi configuration, consult the project documentation before guessing"
-                .to_string(),
-        );
-    }
+  conversation, use it instead of fetching it again.",
+    ];
     let guidelines = guidelines.join("\n");
 
     format!(
@@ -198,10 +168,10 @@ Current working directory: {cwd}"
 fn builtin_tool_snippet(name: &str) -> Option<&'static str> {
     Some(match name {
         "read" => "Read file contents",
-        "bash" => "Execute Bash commands using Bash/POSIX syntax, including on Windows",
+        "bash" => "Execute Bash commands (Bash/POSIX syntax, also on Windows)",
         "edit" => "Find/replace edits to existing files",
         "write" => "Create or overwrite files",
-        "docs" => "Look up rpi usage, extension, package, and compatibility documentation",
+        "docs" => "Look up rpi commands, extensions, Pi package compatibility and .rpi configuration instead of guessing",
         "grep" => "Search file contents for a pattern",
         "find" => "Find files by glob pattern",
         "ls" => "List directory contents",
@@ -3528,8 +3498,7 @@ mod tests {
             "- bash",
             "- docs",
             "todo",
-            "PowerShell cmdlets",
-            "project documentation",
+            "Windows",
         ] {
             assert!(
                 !p.contains(absent),
@@ -3554,20 +3523,17 @@ mod tests {
         assert!(!p.contains("- find"));
         assert!(!p.contains("- ls"));
         assert!(!p.contains("- powershell"));
-        assert!(p.contains("Bash/POSIX syntax, including on Windows"));
-        assert!(p.contains("do not pass PowerShell cmdlets"));
+        assert!(p.contains("Bash/POSIX syntax, also on Windows"));
     }
 
     #[test]
     fn default_prompt_instructs_language_matching() {
-        // The model must detect the user's language and answer in it, so a
-        // Chinese (or any non-English) user gets a same-language reply without
-        // having to ask every turn.
+        // A Chinese (or any non-English) user gets a same-language reply
+        // without having to ask every turn.
         let p = default_system_prompt_with_tools("/tmp/proj", false, &default_prompt_tools());
-        let lower = p.to_lowercase();
         assert!(
-            lower.contains("same language") && lower.contains("detect"),
-            "the prompt must tell the model to detect and mirror the user's language: {p}"
+            p.contains("same language as the user's latest message"),
+            "the prompt must tell the model to mirror the user's language: {p}"
         );
     }
 
@@ -3627,13 +3593,25 @@ mod tests {
             "the replayed variant must forbid re-deriving the plan: {p}"
         );
         assert!(
-            lower.contains("do not re-derive") && lower.contains("re-listing the same plan"),
+            lower.contains("do not re-derive") && lower.contains("re-stating the same plan"),
             "the anti-repetition rule must survive the flip: {p}"
         );
         assert!(
             lower.contains("already shown earlier"),
             "the re-read rule must survive the flip: {p}"
         );
+    }
+
+    #[test]
+    fn default_prompt_states_each_rule_once() {
+        // The plan rule, the todo tool and the anti-repetition line used to be
+        // spread over two guidelines that repeated each other.
+        for replayed in [false, true] {
+            let p = default_system_prompt_with_tools("/tmp/proj", replayed, &default_prompt_tools());
+            for phrase in ["the same plan", "todo tool", "Windows", "guessing"] {
+                assert_eq!(p.matches(phrase).count(), 1, "{phrase:?} repeated: {p}");
+            }
+        }
     }
 
     /// Only side-effect-free tools may be replayed after a crash.
@@ -4353,3 +4331,5 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }
+
+
