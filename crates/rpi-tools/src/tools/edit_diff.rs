@@ -361,8 +361,10 @@ fn apply_replacements_preserving_unchanged_lines(
 }
 
 /// Split content into lines, each preserving its trailing `\n` (or the final
-/// line without one). Mirrors `splitLinesWithEndings`.
-fn split_lines_with_endings(content: &str) -> Vec<String> {
+/// line without one). Mirrors `splitLinesWithEndings`. Shared with
+/// [`crate::tools::edit_apply`], which copies untouched lines from the original
+/// content when an edit only matched after normalization.
+pub(crate) fn split_lines_with_endings(content: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut acc = String::new();
     for c in content.chars() {
@@ -377,8 +379,9 @@ fn split_lines_with_endings(content: &str) -> Vec<String> {
     out
 }
 
-/// `(start, end)` byte-offset spans per line. Mirrors `getLineSpans`.
-fn get_line_spans(content: &str) -> Vec<(usize, usize)> {
+/// `(start, end)` byte-offset spans per line. Mirrors `getLineSpans`. Shared
+/// with [`crate::tools::edit_apply`].
+pub(crate) fn get_line_spans(content: &str) -> Vec<(usize, usize)> {
     let mut spans = Vec::new();
     let mut start = 0usize;
     for (i, c) in content.char_indices() {
