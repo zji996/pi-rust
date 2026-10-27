@@ -167,7 +167,10 @@ async fn rejects_missing_and_duplicate_target() {
         AgentError::Tool(m) => m,
         other => panic!("expected Tool error, got {other:?}"),
     };
-    assert!(m1.contains("Could not find the exact text"), "got: {m1}");
+    assert!(
+        m1.contains("error: edits[0].oldText not found in edit.txt"),
+        "got: {m1}"
+    );
 
     let err_dup = run_edit(
         tool,
@@ -179,7 +182,12 @@ async fn rejects_missing_and_duplicate_target() {
         AgentError::Tool(m) => m,
         other => panic!("expected Tool error, got {other:?}"),
     };
-    assert!(m2.contains("Found 3 occurrences"), "got: {m2}");
+    // The count plus every occurrence's line position.
+    assert!(
+        m2.contains("error: edits[0].oldText occurs 3 times in edit.txt (line 1 (3 times))"),
+        "got: {m2}"
+    );
+    assert!(m2.contains("set replaceAll: true"), "got: {m2}");
 }
 
 #[tokio::test]
@@ -222,9 +230,11 @@ async fn fuzzy_matches_smart_quote_apostrophe() {
     )
     .await
     .expect("fuzzy edit ok");
+    // The match went through the normalization layer, and the result says so.
     assert_eq!(
         text_output(&result),
-        "Successfully replaced 1 block(s) in edit.txt."
+        "Successfully replaced 1 block(s) in edit.txt.\n\
+         note: edits[0] matched after normalizing trailing whitespace/quotes (line 1)"
     );
     assert_eq!(read_back(&env, "edit.txt").await, "it is a file\n");
 }
@@ -247,8 +257,9 @@ async fn rejects_noop_edit() {
         AgentError::Tool(m) => m,
         other => panic!("expected Tool error, got {other:?}"),
     };
+    // A no-op edit is reported in one line, naming the edit index.
     assert!(
-        m.to_lowercase().contains("no change") || m.to_lowercase().contains("no-op"),
+        m.contains("error: edits[0].oldText and newText are identical in edit.txt"),
         "got: {m}"
     );
 }

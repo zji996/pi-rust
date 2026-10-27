@@ -5,6 +5,8 @@
 
 pub mod bash;
 pub mod edit;
+pub mod edit_apply;
+pub mod edit_diagnostics;
 pub mod edit_diff;
 pub mod external;
 pub mod find;
@@ -13,6 +15,7 @@ pub mod image;
 pub mod ls;
 pub mod powershell;
 pub mod read;
+pub mod semantic_edit;
 pub mod tool_context;
 pub mod write;
 
