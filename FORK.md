@@ -16,6 +16,7 @@ runs as its colleague. It stays a thin patch stack on top of upstream
 | Patch | Why delegate needs it |
 | --- | --- |
 | The default system prompt lists only the active tools | `--tools read,grep,find,ls` (read-only runs) otherwise tells the model it can edit, write and track todos |
+| `--fork <file>` takes a session file outside the session directory | delegate forks a copy of the previous round's session kept in the run directory (Pi accepts any session file) |
 | `edit` uses the semantic matcher ported from [pi-semantic-edit](https://github.com/k3-2o/pi-semantic-edit) (MIT) | Pi colleagues ran with it: drift-tolerant matching, `replaceAll`, closest-text errors |
 
 A patch that upstream would also want goes upstream as a PR; once merged it drops out of `aia`.
