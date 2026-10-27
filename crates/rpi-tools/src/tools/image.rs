@@ -19,7 +19,7 @@ use crate::image_processing::{
     detect_image_mime, get_image_dimensions, process_image, ImageProcessingOptions, OutputFormat,
 };
 
-/// Input for the image tool.
+// Input for the image tool.
 #[derive(Debug, Clone, JsonSchema, Deserialize)]
 pub struct ImageToolInput {
     /// The action to perform: "info", "resize", "convert", or "process".
