@@ -5,7 +5,7 @@ use crate::event_stream::{
     AssistantMessageEventStreamProducer,
 };
 use crate::model::{Model, StreamingProtocolCompat};
-use crate::provider::{Provider, SimpleStreamOptions};
+use crate::provider::{CacheRetention, Provider, SimpleStreamOptions};
 use crate::providers::anthropic::cost::calculate_cost;
 use crate::providers::anthropic::json_parse::parse_streaming_json;
 use crate::providers::anthropic::retry::retry_provider_request;
@@ -1835,6 +1835,13 @@ fn build_request(model: &Model, ctx: &Context, opts: &SimpleStreamOptions) -> Va
     if let Some(s) = &ctx.system_prompt {
         body["instructions"] = Value::String(s.clone());
     }
+    // OpenAI routes cached prefixes by this key; without it, consecutive turns
+    // of one session can land on hosts that never saw the prefix and miss.
+    if !matches!(opts.cache_retention, CacheRetention::None) {
+        if let Some(session_id) = &opts.session_id {
+            body["prompt_cache_key"] = Value::String(session_id.clone());
+        }
+    }
     let max = opts.max_tokens.unwrap_or(model.max_tokens);
     if max > 0 {
         // OpenAI rejects Responses requests with max_output_tokens < 16.
@@ -3054,6 +3061,25 @@ mod tests {
         assert_eq!(body["input"][0]["id"], "fc_456");
         assert_eq!(body["input"][1]["type"], "function_call_output");
         assert_eq!(body["input"][1]["call_id"], "call_123");
+    }
+
+    #[test]
+    fn session_id_becomes_the_prompt_cache_key_unless_caching_is_off() {
+        let context = Context {
+            system_prompt: Some("system".into()),
+            messages: Vec::new(),
+            tools: Vec::new(),
+        };
+        let key = |opts: &SimpleStreamOptions| {
+            let body = build_request(&model(), &context, opts);
+            body.get("prompt_cache_key").cloned()
+        };
+        let mut opts = SimpleStreamOptions::default();
+        assert_eq!(key(&opts), None);
+        opts.session_id = Some("sess-1".into());
+        assert_eq!(key(&opts), Some(json!("sess-1")));
+        opts.cache_retention = CacheRetention::None;
+        assert_eq!(key(&opts), None);
     }
 
     #[test]
