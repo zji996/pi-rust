@@ -17,7 +17,8 @@ runs as its colleague. It stays a thin patch stack on top of upstream
 | --- | --- |
 | The default system prompt lists only the active tools | `--tools read,grep,find,ls` (read-only runs) otherwise tells the model it can edit, write and track todos |
 | `--fork <file>` takes a session file outside the session directory | delegate forks a copy of the previous round's session kept in the run directory (Pi accepts any session file) |
-| `edit` uses the semantic matcher ported from [pi-semantic-edit](https://github.com/k3-2o/pi-semantic-edit) (MIT) | Pi colleagues ran with it: drift-tolerant matching, `replaceAll`, closest-text errors |
+| `edit` matches like upstream and diagnoses like a compiler: candidate regions from the [pi-semantic-edit](https://github.com/k3-2o/pi-semantic-edit) (MIT) chain, plus `replaceAll` | Pi colleagues copy `oldText` from `read` output; the fork drops drift-tolerant matching and auto-expand (the model decides, not the tool) but keeps the chain for naming the closest real text, the differing lines and the exact text to copy |
+| The `edit` display diff shows replaced lines old then new | the TUI diff printed the new text on both sides of a replaced line (upstream PR pending) |
 
 A patch that upstream would also want goes upstream as a PR; once merged it drops out of `aia`.
 
