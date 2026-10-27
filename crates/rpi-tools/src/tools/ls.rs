@@ -34,7 +34,7 @@ use crate::truncate::{
 /// Default max entries. Mirrors TS `ls.ts::DEFAULT_LIMIT`.
 const DEFAULT_LIMIT: u32 = 500;
 
-/// Input for the ls tool. Mirrors TS `LsToolInput`.
+// Input for the ls tool. Mirrors TS `LsToolInput`.
 #[derive(Debug, Clone, JsonSchema, Deserialize)]
 pub struct LsInput {
     /// Directory to list (default: current directory).
