@@ -38,7 +38,7 @@ const BASH_UPDATE_THROTTLE_MS: u64 = 2_000;
 /// Default Bash deadline when neither the caller nor the host specifies one.
 pub const DEFAULT_BASH_TIMEOUT_SECONDS: f64 = 120.0;
 
-/// Input for the bash tool. Mirrors TS `BashToolInput`. `timeout` is in seconds.
+// Input for the bash tool. Mirrors TS `BashToolInput`. `timeout` is in seconds.
 #[derive(Debug, Clone, JsonSchema, Deserialize)]
 pub struct BashInput {
     /// Bash command to execute.
