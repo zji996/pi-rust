@@ -19,6 +19,8 @@ runs as its colleague. It stays a thin patch stack on top of upstream
 | `--fork <file>` takes a session file outside the session directory | delegate forks a copy of the previous round's session kept in the run directory (Pi accepts any session file) |
 | `edit` matches like upstream and diagnoses like a compiler: candidate regions from the [pi-semantic-edit](https://github.com/k3-2o/pi-semantic-edit) (MIT) chain, plus `replaceAll` | Pi colleagues copy `oldText` from `read` output; the fork drops drift-tolerant matching and auto-expand (the model decides, not the tool) but keeps the chain for naming the closest real text, the differing lines and the exact text to copy |
 | The `edit` display diff shows replaced lines old then new | the TUI diff printed the new text on both sides of a replaced line (upstream PR pending) |
+| Tool schemas carry no developer notes | struct doc comments ("Mirrors TS `ReadToolInput`") were sent to the model as schema descriptions on every request |
+| The default prompt states each guideline once | the plan and todo rules repeated each other, and bash/docs advice appeared in two or three places (2181 → 1375 characters) |
 
 A patch that upstream would also want goes upstream as a PR; once merged it drops out of `aia`.
 
