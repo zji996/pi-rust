@@ -39,7 +39,7 @@ use crate::truncate::{
 /// Default max results. Mirrors TS `find.ts::DEFAULT_LIMIT`.
 const DEFAULT_LIMIT: u32 = 1000;
 
-/// Input for the find tool. Mirrors TS `FindToolInput`.
+// Input for the find tool. Mirrors TS `FindToolInput`.
 #[derive(Debug, Clone, JsonSchema, Deserialize)]
 pub struct FindInput {
     /// Glob pattern to match files, e.g. `*.ts`, `**/*.json`, `src/**/*.spec.ts`.
