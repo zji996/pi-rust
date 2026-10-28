@@ -394,7 +394,8 @@ async fn normalized_match_succeeds_with_a_note() {
     .await
     .expect("normalized match is upstream behavior and must still succeed");
 
-    assert_eq!(read_back(&env, "f.txt").await, "it is a file\nkeep\n");
+    // Only the matched bytes change; the trailing spaces after them stay.
+    assert_eq!(read_back(&env, "f.txt").await, "it is a file  \nkeep\n");
     assert_eq!(
         text_output(&result),
         "Successfully replaced 1 block(s) in f.txt.\n\
