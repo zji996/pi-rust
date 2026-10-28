@@ -191,6 +191,17 @@ pub fn apply_edits(
             });
             continue;
         }
+        if spans
+            .iter()
+            .all(|span| content[span.start..span.end] == span.text)
+        {
+            failures.push(Failure {
+                index,
+                code: FileErrorCode::Invalid,
+                message: diag::no_op(path, index),
+            });
+            continue;
+        }
         plans.push(Plan {
             index,
             needle,
@@ -646,6 +657,18 @@ mod tests {
         )
         .expect("ok");
         assert_eq!(outcome.new_content, "说明（见图），say hello\n");
+    }
+
+    #[test]
+    fn a_normalized_no_op_beside_a_real_edit_fails_without_writing() {
+        // it's -> it’s matches it’s only after normalization and changes nothing.
+        let err = apply_edits(
+            "it\u{2019}s fine\nfoo\n",
+            &[req("it's fine", "it\u{2019}s fine"), req("foo", "bar")],
+            "/f",
+        )
+        .expect_err("a resolved no-op must fail even beside a real edit");
+        assert!(err.message.contains("edits[0]"), "got: {}", err.message);
     }
 
     #[test]
