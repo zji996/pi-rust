@@ -214,6 +214,12 @@ pub fn provider_is_openai_responses(cfg: &ProviderConfig) -> bool {
     matches!(cfg.api.as_deref(), Some("openai-responses"))
 }
 
+/// Whether a configured provider uses the Google Generative AI protocol
+/// (`POST {baseUrl}/models/{id}:streamGenerateContent`).
+pub fn provider_is_google_generative_ai(cfg: &ProviderConfig) -> bool {
+    matches!(cfg.api.as_deref(), Some("google-generative-ai"))
+}
+
 pub fn provider_to_models(
     provider_id: &str,
     cfg: &ProviderConfig,
@@ -225,11 +231,14 @@ pub fn provider_to_models(
         Api::OpenaiCompletions
     } else if provider_is_openai_responses(cfg) {
         Api::OpenaiResponses
+    } else if provider_is_google_generative_ai(cfg) {
+        Api::GoogleGenerativeAi
     } else {
         return None;
     };
     let provider_base = cfg.base_url.clone().unwrap_or_else(|| match api {
         Api::OpenaiCompletions | Api::OpenaiResponses => "https://api.openai.com".to_string(),
+        Api::GoogleGenerativeAi => GOOGLE_GENERATIVE_AI_DEFAULT_BASE_URL.to_string(),
         _ => default_anthropic_base_url(),
     });
     let mut merged: Vec<Model> = Vec::with_capacity(cfg.models.len());
@@ -338,6 +347,12 @@ fn parse_input_modalities(input: Option<&[String]>) -> Vec<InputModality> {
 /// Public so [`crate::RuntimeConfig::resolve`] can tell a gateway model (whose
 /// `base_url` differs from this) from a built-in Anthropic model.
 pub const ANTHROPIC_DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
+
+/// The first-party Google Generative AI endpoint. The Gemini API version is part
+/// of the path (the provider does not append one), so a models.json provider
+/// that omits `baseUrl` still addresses `…/v1beta/models/{id}:streamGenerateContent`.
+pub const GOOGLE_GENERATIVE_AI_DEFAULT_BASE_URL: &str =
+    "https://generativelanguage.googleapis.com/v1beta";
 
 /// Same value as [`ANTHROPIC_DEFAULT_BASE_URL`], as an owned `String` for the
 /// `unwrap_or_else` ergonomic used by [`provider_to_models`].

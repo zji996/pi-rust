@@ -699,10 +699,25 @@ impl<'model, 'message> CanonicalHistory<'model, 'message> {
 /// synthetic tool results for orphans, and skipping of errored/aborted
 /// assistant messages. Mirrors `transform-messages.ts::transformMessages`.
 ///
-/// `normalize_tool_call_id` is the Anthropic normalizer; `model.input` drives
-/// the image-downgrade branch. The out `Vec<Message>` is what `convert_messages`
-/// then serializes.
+/// Uses the Anthropic tool-call-id normalizer; `model.input` drives the
+/// image-downgrade branch. The out `Vec<Message>` is what `convert_messages`
+/// then serializes. Other wire protocols call [`transform_messages_with`] with
+/// their own normalizer.
 pub fn transform_messages(messages: &[Message], model: &Model) -> Vec<Message> {
+    transform_messages_with(messages, model, &normalize_tool_call_id)
+}
+
+/// [`transform_messages`] with a caller-supplied tool-call-id normalizer.
+///
+/// The TS pipeline takes that normalizer as a parameter; the wire-specific
+/// rules differ (Anthropic unconditionally rewrites ids to `[A-Za-z0-9_-]{1,64}`
+/// while Google only normalizes for models that require explicit tool-call ids).
+/// `normalize_tool_call_id` above is the Anthropic rule and remains the default.
+pub fn transform_messages_with(
+    messages: &[Message],
+    model: &Model,
+    normalize_tool_call_id: &dyn Fn(&str) -> String,
+) -> Vec<Message> {
     let supports_images = model.input.contains(&InputModality::Image);
     let mut tool_call_id_map: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
