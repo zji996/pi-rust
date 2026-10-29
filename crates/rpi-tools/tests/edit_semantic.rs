@@ -502,5 +502,4 @@ async fn tool_description_documents_exactness_and_replace_all() {
             "description must not promise relaxed matching ({relaxed}): {description}"
         );
     }
-
 }
