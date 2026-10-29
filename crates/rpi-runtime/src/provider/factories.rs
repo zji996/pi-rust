@@ -23,10 +23,12 @@ impl ProviderFactory for ProtocolFactory {
         settings: &crate::RuntimeSettings,
         values: &dyn ValueSource,
     ) -> Result<Arc<dyn Provider>, ResolveError> {
-        let fallback = if self.0 == rpi_ai::Api::AnthropicMessages {
-            "https://api.anthropic.com"
-        } else {
-            "https://api.openai.com/v1"
+        let fallback = match self.0 {
+            rpi_ai::Api::AnthropicMessages => "https://api.anthropic.com",
+            // Google's API version is part of the path; the provider never
+            // appends one, so the default base URL must carry it.
+            rpi_ai::Api::GoogleGenerativeAi => crate::config::GOOGLE_GENERATIVE_AI_DEFAULT_BASE_URL,
+            _ => "https://api.openai.com/v1",
         };
         let http = provider_http_client(&models, fallback, settings, values)?;
         let provider: Arc<dyn Provider> = match self.0 {
@@ -43,6 +45,14 @@ impl ProviderFactory for ProtocolFactory {
             }
             rpi_ai::Api::OpenaiResponses => {
                 Arc::new(OpenAiResponsesProvider::with_models_without_env_api_key(
+                    provider_id,
+                    None,
+                    http,
+                    models,
+                ))
+            }
+            rpi_ai::Api::GoogleGenerativeAi => {
+                Arc::new(GoogleGenerativeAiProvider::with_models_without_env_api_key(
                     provider_id,
                     None,
                     http,
@@ -80,6 +90,7 @@ impl Default for RuntimeFactories {
             rpi_ai::Api::AnthropicMessages,
             rpi_ai::Api::OpenaiCompletions,
             rpi_ai::Api::OpenaiResponses,
+            rpi_ai::Api::GoogleGenerativeAi,
         ]
         .into_iter()
         .map(|api| {
@@ -634,5 +645,83 @@ mod tests {
             recorded[0].1.headers.as_ref().unwrap()["Authorization"],
             "Bearer per-request"
         );
+    }
+
+    /// The Google wire protocol is part of the default factory table, and a
+    /// configured provider authenticates with `x-goog-api-key` (never the
+    /// OpenAI `Authorization: Bearer` shape) against the model's base URL.
+    #[tokio::test]
+    async fn google_generative_ai_protocol_is_registered_and_uses_its_own_auth_header() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (head_tx, head_rx) = std::sync::mpsc::channel::<String>();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut buffer = [0u8; 8192];
+            let read = socket.read(&mut buffer).unwrap();
+            head_tx
+                .send(String::from_utf8_lossy(&buffer[..read]).to_string())
+                .unwrap();
+            let body = "data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\r\n\r\n";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(response.as_bytes()).unwrap();
+        });
+
+        let factories = RuntimeFactories::default();
+        assert!(
+            factories.protocols.contains_key("google-generative-ai"),
+            "google-generative-ai must be a registered protocol"
+        );
+        let model = Model::new(
+            "gemini-2.5-flash",
+            "Gemini 2.5 Flash",
+            Api::GoogleGenerativeAi,
+            "gemini-proxy",
+            format!("http://{address}/v1beta"),
+        );
+        let (provider, _) = factories
+            .configure(
+                "gemini-proxy",
+                &Api::GoogleGenerativeAi,
+                vec![model],
+                RequestAuth::ApiKey("gemini-secret".into()),
+                &crate::RuntimeSettings::default(),
+                &BTreeMap::<String, String>::new(),
+            )
+            .unwrap();
+        assert_eq!(provider.id(), "gemini-proxy");
+        assert_eq!(provider.models().len(), 1);
+        assert_eq!(provider.models()[0].api, Api::GoogleGenerativeAi);
+
+        let stream = provider
+            .stream_simple(
+                &provider.models()[0],
+                &Context::new(vec![]),
+                &SimpleStreamOptions::default(),
+            )
+            .await;
+        let result = stream.result().await.unwrap();
+        assert_eq!(result.stop_reason, StopReason::Stop);
+        assert_eq!(result.api, Api::GoogleGenerativeAi);
+
+        let head = head_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let lower = head.to_ascii_lowercase();
+        assert!(
+            head.starts_with(
+                "POST /v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse HTTP/1.1"
+            ),
+            "unexpected request line: {head}"
+        );
+        assert!(lower.contains("x-goog-api-key: gemini-secret"), "{head}");
+        assert!(!lower.contains("authorization:"), "{head}");
+        server.join().unwrap();
     }
 }
