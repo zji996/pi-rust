@@ -76,6 +76,9 @@ impl AnthropicMessagesCompat {
 ///   `compat.requiresReasoningContent` (a separate reasoning_content field).
 /// - `openai-responses`: visible thinking is replayed as input content.
 /// - `anthropic-messages`: thinking blocks are echoed back with their signature.
+/// - `google-generative-ai`: thinking is replayed as `thought: true` parts with
+///   their `thoughtSignature` when provider + model match (Google only keeps the
+///   chain within the model that produced it).
 /// - everything else: reasoning is dropped, so the model cannot see it again.
 pub fn prior_reasoning_is_replayed(model: &Model) -> bool {
     match model.api {
@@ -87,6 +90,7 @@ pub fn prior_reasoning_is_replayed(model: &Model) -> bool {
         ),
         Api::OpenaiResponses | Api::AzureOpenaiResponses | Api::OpenaiCodexResponses => true,
         Api::AnthropicMessages => true,
+        Api::GoogleGenerativeAi => true,
         _ => false,
     }
 }
