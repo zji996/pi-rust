@@ -9,7 +9,8 @@ runs as its colleague. It stays a thin patch stack on top of upstream
 - `main` mirrors upstream `main`; nothing is committed to it here.
 - `aia` is an upstream release tag (now `v0.11.0`) plus the patches below, one commit each.
 - Releases are tagged `v<upstream version>-aia.<n>` (for example `v0.11.0-aia.1`) and publish
-  `rpi-<tag>-x86_64-unknown-linux-gnu.tar.gz` with its `.sha256`.
+  `rpi-<tag>-x86_64-unknown-linux-gnu.tar.gz` and (from `v0.11.0-aia.3`)
+  `rpi-<tag>-x86_64-pc-windows-msvc.zip`, each with its `.sha256`.
 
 ## Patches
 
@@ -44,3 +45,8 @@ CARGO_INCREMENTAL=0 cargo build --release -p rpi-cli
 
 The binary is `target/release/rpi`; package it as `rpi-<tag>-x86_64-unknown-linux-gnu.tar.gz` with
 a `.sha256` next to it.
+
+Windows is built natively on the LAN Windows 11 test machine (MSVC toolchain), from a `git bundle`
+of the tagged commit; no hosted CI. Run `cargo test --workspace --locked` there first, then the
+same release build, and smoke `rpi.exe --mode rpc` with an isolated `RPI_CODING_AGENT_DIR`. The zip
+holds `rpi.exe` only, like the Linux tarball holds `rpi` only.
