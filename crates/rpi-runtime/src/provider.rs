@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use rpi_ai::providers::anthropic::models::anthropic_models;
 use rpi_ai::providers::anthropic::AnthropicProvider;
+use rpi_ai::providers::google::GoogleGenerativeAiProvider;
 use rpi_ai::providers::openai_completions::OpenAiCompletionsProvider;
 use rpi_ai::providers::openai_responses::openai_responses_models;
 use rpi_ai::providers::openai_responses::OpenAiResponsesProvider;
@@ -120,7 +121,7 @@ pub enum ResolveError {
     HttpConfiguration,
     #[error("No implementation registered for provider {provider:?} and API {api}")]
     UnsupportedApi { provider: String, api: String },
-    #[error("Unknown provider \"{0}\". Supported: anthropic, openai-completions, openai-responses, a models.json provider id, or an installed provider package")]
+    #[error("Unknown provider \"{0}\". Supported: anthropic, openai-completions, openai-responses, google-generative-ai, a models.json provider id, or an installed provider package")]
     UnknownProvider(String),
     #[error(
         "Provider \"{requested}\" is ambiguous: {matches}. Use the exact provider id to select one."
@@ -540,13 +541,17 @@ pub(crate) fn resolve_with_factories(
     } else {
         None
     };
+    // The `openai_credentials` map is the protocol-agnostic API-key store: the
+    // Anthropic-wire protocols keep their own (x-api-key vs bearer) map, and
+    // every other keyed protocol — including Google's `x-goog-api-key` — takes
+    // its key from here and formats the header itself.
     let selected_is_authed = openai_credentials.contains_key(&selected_provider)
         || model_has_header_auth(&model)
         || match selected_api {
             rpi_ai::Api::AnthropicMessages => selected_anthropic_credential.is_some(),
-            rpi_ai::Api::OpenaiCompletions | rpi_ai::Api::OpenaiResponses => {
-                selected_openai_key.is_some()
-            }
+            rpi_ai::Api::OpenaiCompletions
+            | rpi_ai::Api::OpenaiResponses
+            | rpi_ai::Api::GoogleGenerativeAi => selected_openai_key.is_some(),
             _ => false,
         };
     if !selected_is_authed {
@@ -599,10 +604,6 @@ pub(crate) fn resolve_with_factories(
                         None,
                     )
                 }
-                rpi_ai::Api::OpenaiCompletions | rpi_ai::Api::OpenaiResponses => (
-                    None,
-                    openai_credential_for(&openai_credentials, &candidate.provider).cloned(),
-                ),
                 _ => (
                     None,
                     openai_credential_for(&openai_credentials, &candidate.provider).cloned(),
@@ -612,9 +613,9 @@ pub(crate) fn resolve_with_factories(
                 || model_has_header_auth(candidate)
                 || match candidate.api {
                     rpi_ai::Api::AnthropicMessages => anth.is_some(),
-                    rpi_ai::Api::OpenaiCompletions | rpi_ai::Api::OpenaiResponses => {
-                        openai_key.is_some()
-                    }
+                    rpi_ai::Api::OpenaiCompletions
+                    | rpi_ai::Api::OpenaiResponses
+                    | rpi_ai::Api::GoogleGenerativeAi => openai_key.is_some(),
                     _ => false,
                 };
             if !authed {
@@ -1032,7 +1033,8 @@ fn resolve_openai_credentials_with(
     let mut provider_ids = vec!["openai".to_string()];
     for (provider_id, provider_cfg) in &cfg.providers {
         if (config::provider_is_openai_completions(provider_cfg)
-            || config::provider_is_openai_responses(provider_cfg))
+            || config::provider_is_openai_responses(provider_cfg)
+            || config::provider_is_google_generative_ai(provider_cfg))
             && !provider_ids.contains(provider_id)
         {
             provider_ids.push(provider_id.clone());
@@ -1256,6 +1258,7 @@ fn provider_is_known(requested: &str, cfg: &config::ModelsConfig) -> bool {
         || requested.eq_ignore_ascii_case("openai")
         || requested.eq_ignore_ascii_case("openai-completions")
         || requested.eq_ignore_ascii_case("openai-responses")
+        || requested.eq_ignore_ascii_case("google-generative-ai")
 }
 
 /// Canonicalize user-facing `--provider` input without weakening provider
@@ -1275,6 +1278,7 @@ fn canonicalize_cli_provider(
         "openai",
         "openai-completions",
         "openai-responses",
+        "google-generative-ai",
     ];
     if BUILTIN_PROVIDER_IDS.contains(&requested) {
         return Ok(requested.to_string());
@@ -1331,6 +1335,9 @@ fn provider_matches(model: &Model, requested: &str, cfg: &config::ModelsConfig) 
     if requested.eq_ignore_ascii_case("openai-responses") {
         return matches!(model.api, rpi_ai::Api::OpenaiResponses);
     }
+    if requested.eq_ignore_ascii_case("google-generative-ai") {
+        return matches!(model.api, rpi_ai::Api::GoogleGenerativeAi);
+    }
     false
 }
 
@@ -1366,7 +1373,9 @@ fn model_is_authed_for_resolution(
             rpi_ai::Api::AnthropicMessages => {
                 anthropic_credential_for(anthropic_credentials, &model.provider).is_some()
             }
-            rpi_ai::Api::OpenaiCompletions | rpi_ai::Api::OpenaiResponses => {
+            rpi_ai::Api::OpenaiCompletions
+            | rpi_ai::Api::OpenaiResponses
+            | rpi_ai::Api::GoogleGenerativeAi => {
                 openai_credential_for(openai_credentials, &model.provider).is_some()
             }
             _ => false,

@@ -1055,6 +1055,81 @@ fn anthropic_base_url_env_does_not_redirect_a_custom_provider() {
 }
 
 #[test]
+fn models_json_assembles_google_generative_ai_models() {
+    let _env = TestEnv::new();
+    std::fs::write(
+        config::models_path().unwrap(),
+        r#"{
+  "providers": {
+    "gemini-proxy": {
+      "api": "google-generative-ai",
+      "apiKey": "gemini-secret",
+      "models": [
+        { "id": "gemini-3-pro-preview", "name": "Gemini 3 Pro", "reasoning": true }
+      ]
+    }
+  }
+}"#,
+    )
+    .unwrap();
+    let r = resolve(
+        Some("gemini-proxy"),
+        Some("gemini-3-pro-preview"),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(r.model.api, rpi_ai::Api::GoogleGenerativeAi);
+    assert_eq!(r.model.provider, "gemini-proxy");
+    assert_eq!(r.model.id, "gemini-3-pro-preview");
+    assert!(r.model.reasoning);
+    // The default base URL keeps the API version in the path.
+    assert_eq!(
+        r.model.base_url,
+        config::GOOGLE_GENERATIVE_AI_DEFAULT_BASE_URL
+    );
+    // The runtime was built for that provider and exposes the model.
+    assert_eq!(r.provider.id(), "gemini-proxy");
+    assert_eq!(r.provider.models().len(), 1);
+    assert_eq!(r.provider.models()[0].id, "gemini-3-pro-preview");
+    assert!(r
+        .providers
+        .iter()
+        .any(|provider| provider.id() == "gemini-proxy"));
+    // Public descriptors never leak the credential.
+    assert!(r.provider.models().iter().all(|m| m.headers.is_none()));
+
+    // `--provider google-generative-ai` is a protocol alias, and an explicit
+    // base URL (an antigravity-style proxy) is preserved.
+    std::fs::write(
+        config::models_path().unwrap(),
+        r#"{
+  "providers": {
+    "antigravity": {
+      "api": "google-generative-ai",
+      "apiKey": "gemini-secret",
+      "baseUrl": "http://127.0.0.1:9/antigravity/v1beta",
+      "models": [ { "id": "gemini-2.5-flash" } ]
+    }
+  }
+}"#,
+    )
+    .unwrap();
+    let r = resolve(
+        Some("google-generative-ai"),
+        Some("gemini-2.5-flash"),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(r.model.provider, "antigravity");
+    assert_eq!(r.model.base_url, "http://127.0.0.1:9/antigravity/v1beta");
+    assert_eq!(r.provider.id(), "antigravity");
+}
+
+#[test]
 fn models_json_adds_custom_model() {
     let _env = TestEnv::new();
     std::env::set_var(ANTHROPIC_API_KEY_ENV, "k");
