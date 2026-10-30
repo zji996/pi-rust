@@ -1679,6 +1679,10 @@ async fn rpc_get_messages(
                     "entryId": compaction.base.id,
                     "tokensBefore": compaction.tokens_before,
                     "retainedMessages": compaction.retained_tail.len(),
+                    // The recap body itself (unlike `compaction_json`'s one-line
+                    // status text): a client needs it to show what the summary
+                    // replaced on the timeline.
+                    "summary": compaction.summary,
                     "timestamp": compaction.base.timestamp,
                 }),
             )),
@@ -2230,6 +2234,39 @@ mod tests {
         AssistantMessage, Content, StopReason, TextContent, TextContentType, Usage,
     };
     use rpi_harness::session::types::OperationError;
+
+    // A client renders the compaction boundary on the timeline, so it needs the
+    // recap body itself, not just the fact that the context shrank.
+    #[tokio::test]
+    async fn get_messages_compaction_row_carries_the_recap_text() {
+        use rpi_harness::session::types::{ProvisionedEntry, ProvisionedKind};
+        let harness = AgentHarness::create(Default::default()).await.unwrap();
+        harness
+            .session()
+            .append_entry(
+                ProvisionedEntry {
+                    id: "compaction-1".into(),
+                    kind: ProvisionedKind::Compaction {
+                        summary: "Recap: the user wants a client-side recap.".into(),
+                        retained_tail: vec![],
+                        tokens_before: 1_234,
+                        details: None,
+                        usage: None,
+                    },
+                },
+                "main",
+            )
+            .await
+            .unwrap();
+        let lane = harness.lane("main");
+        let page = rpc_get_messages(&lane, &harness, &serde_json::json!({}))
+            .await
+            .unwrap();
+        let row = &page["messages"][0];
+        assert_eq!(row["role"], "compaction");
+        assert_eq!(row["retainedMessages"], 0);
+        assert_eq!(row["summary"], "Recap: the user wants a client-side recap.");
+    }
 
     #[test]
     fn session_branch_query_requires_canonical_arguments() {
