@@ -30,7 +30,7 @@
 //!   The interactive `-c`/`-r`/`--session` paths enable that mode and replay
 //!   the existing branch before appending new messages. See [`SessionSelection`].
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -95,6 +95,25 @@ pub fn default_system_prompt_with_tools(
     prior_reasoning_replayed: bool,
     tools: &[String],
 ) -> String {
+    default_system_prompt_with_host_tool_prompts(
+        cwd,
+        prior_reasoning_replayed,
+        tools,
+        &BTreeMap::new(),
+    )
+}
+
+/// [`default_system_prompt_with_tools`] plus the prompt contributions declared
+/// for host tools (`--host-tools`). A declared `promptSnippet` replaces the
+/// built-in one-line description (a host tool has none otherwise, so it would
+/// be listed by name only), and `promptGuidelines` join the guidelines when the
+/// tool is active. An empty map renders exactly the prompt above.
+pub fn default_system_prompt_with_host_tool_prompts(
+    cwd: &str,
+    prior_reasoning_replayed: bool,
+    tools: &[String],
+    host_tools: &BTreeMap<String, crate::host_tools::HostToolPromptMetadata>,
+) -> String {
     let has = |name: &str| tools.iter().any(|tool| tool == name);
     let todo_hint = if has("todo") {
         "\n  Keep the steps of multi-step work in the todo tool and mark them done as you go."
@@ -128,9 +147,17 @@ pub fn default_system_prompt_with_tools(
     } else {
         tools
             .iter()
-            .map(|name| match builtin_tool_snippet(name) {
-                Some(snippet) => format!("- {name:<5} — {snippet}"),
-                None => format!("- {name}"),
+            .map(|name| {
+                let snippet = host_tools
+                    .get(name)
+                    .and_then(|prompt| prompt.prompt_snippet.as_deref())
+                    .map(str::trim)
+                    .filter(|snippet| !snippet.is_empty())
+                    .or_else(|| builtin_tool_snippet(name));
+                match snippet {
+                    Some(snippet) => format!("- {name:<5} — {snippet}"),
+                    None => format!("- {name}"),
+                }
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -148,6 +175,24 @@ pub fn default_system_prompt_with_tools(
         "- Read only what you need. If a file or search result was already shown earlier in this
   conversation, use it instead of fetching it again.",
     ];
+    let mut guidelines: Vec<String> = guidelines.iter().map(|rule| (*rule).to_string()).collect();
+    // A host tool's declared rules follow the core ones, trimmed and deduped
+    // like every other line, and only while the tool is active.
+    let mut seen: HashSet<String> = guidelines
+        .iter()
+        .map(|rule| rule.strip_prefix("- ").unwrap_or(rule).trim().to_string())
+        .collect();
+    for name in tools {
+        let Some(prompt) = host_tools.get(name) else {
+            continue;
+        };
+        for rule in &prompt.prompt_guidelines {
+            let rule = rule.trim();
+            if !rule.is_empty() && seen.insert(rule.to_string()) {
+                guidelines.push(format!("- {rule}"));
+            }
+        }
+    }
     let guidelines = guidelines.join("\n");
 
     format!(
@@ -270,6 +315,9 @@ pub fn default_session_dir(cwd: &Path) -> PathBuf {
 /// host remains unbound until the harness and authenticated catalog exist.
 pub struct PreparedExtensions {
     pub extension_session: ExtensionSession,
+    /// Host-declared tools (`--host-tools`), validated against the loaded
+    /// extension tool names so a collision is a startup error.
+    pub host_tools: crate::host_tools::HostToolBridge,
     session_dir: PathBuf,
     runtime: tokio::runtime::Handle,
     tool_context: rpi_extensions::ToolCallContext,
@@ -371,6 +419,21 @@ pub fn prepare_extensions(
         }
         report_deferred_renderers(&extension_session);
     }
+    // Host tools are validated against what extensions actually registered, so
+    // this has to run after the load. A failed declaration is fatal here rather
+    // than at first call: the model must never be offered a tool nobody answers.
+    let extension_tool_names: Vec<String> = extension_session
+        .snapshot()
+        .map(|snapshot| {
+            snapshot
+                .tools()
+                .iter()
+                .map(|tool| tool.tool.name.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    let host_tools =
+        crate::host_tools::load(args, &extension_tool_names).map_err(BuildError::HostTools)?;
     Ok(PreparedExtensions {
         session_dir,
         runtime,
@@ -383,6 +446,7 @@ pub fn prepare_extensions(
         editor_text_mailbox,
         action_bridge,
         extension_session,
+        host_tools,
     })
 }
 
@@ -442,6 +506,7 @@ pub async fn build_prepared(
     let PreparedExtensions {
         session_dir,
         runtime,
+        host_tools,
         tool_context,
         action_host,
         harness_cell,
@@ -474,6 +539,7 @@ pub async fn build_prepared(
     // the harness lifetime via the returned session guard. `--no-extensions`
     // skips discovery entirely (no dirs scanned, no plugins loaded).
     merge_extension_tools(&mut tools, &extension_session, args, &tool_context);
+    host_tools.merge_into(&mut tools, args);
     let active = filter_active_tool_names(active_tool_names(&tools, args), args);
 
     // ---- Session storage ----
@@ -515,18 +581,28 @@ pub async fn build_prepared(
     // working-state rule is worded (see `default_system_prompt`).
     let prior_reasoning_replayed = rpi_ai::model::prior_reasoning_is_replayed(&resolved.model);
     let prompt_tools = active.clone();
+    // `--host-tools` declarations may carry prompt metadata; aia's prompt
+    // builder takes only those contributions (an empty map is the common case
+    // and renders byte-for-byte what it did before).
+    let host_tool_prompts = host_tools.prompt_metadata();
+    let default_prompt = || {
+        default_system_prompt_with_host_tool_prompts(
+            &cwd_str,
+            prior_reasoning_replayed,
+            &prompt_tools,
+            &host_tool_prompts,
+        )
+    };
     let mut context_paths = Vec::new();
     let base_prompt = match args.system_prompt.as_deref() {
         Some(explicit) => explicit.to_string(),
         None if project_trusted => match discover_system_prompt_file(cwd) {
-            Some(path) => read_prompt_source(&path, &mut context_paths).unwrap_or_else(|| {
-                default_system_prompt_with_tools(&cwd_str, prior_reasoning_replayed, &prompt_tools)
-            }),
-            None => {
-                default_system_prompt_with_tools(&cwd_str, prior_reasoning_replayed, &prompt_tools)
+            Some(path) => {
+                read_prompt_source(&path, &mut context_paths).unwrap_or_else(default_prompt)
             }
+            None => default_prompt(),
         },
-        None => default_system_prompt_with_tools(&cwd_str, prior_reasoning_replayed, &prompt_tools),
+        None => default_prompt(),
     };
 
     // ---- Append-text sources (precedence: --append-system-prompt > APPEND_SYSTEM.md) ----
@@ -990,6 +1066,7 @@ pub async fn build_prepared(
         broadcast: broadcast_for_context,
         mailbox: reload_mailbox,
         ui_dialog: ui_dialog_mailbox,
+        host_tools,
         ext_status: ext_status_mailbox,
         editor_text: editor_text_mailbox,
         dev_extension: None,
@@ -1164,6 +1241,10 @@ pub struct ReloadContext {
     /// A detached mailbox makes `ask_user` fail with "requires an interactive
     /// UI" (headless contract).
     pub ui_dialog: rpi_extensions::UiDialogMailbox,
+    /// Host-declared tools (`--host-tools`). Held here so `/reload` re-merges
+    /// the same bridge the `--mode rpc` loop relays to the client; an empty
+    /// bridge is the normal case for every other mode.
+    pub host_tools: crate::host_tools::HostToolBridge,
     /// Active `rpi dev` extension builder. `/reload` rebuilds it before
     /// swapping plugin sessions; its watcher signals `mailbox` after a
     /// successful background build.
@@ -1645,22 +1726,30 @@ where
         &effective_args,
         &ctx.tool_context,
     );
+    ctx.host_tools.merge_into(&mut tools, &effective_args);
     let mut active = active_tool_names(&tools, &effective_args);
     active = filter_active_tool_names(active, &effective_args);
     let prompt_tools = active.clone();
+    let host_tool_prompts = ctx.host_tools.prompt_metadata();
     let prior_reasoning_replayed = rpi_ai::model::prior_reasoning_is_replayed(&ctx.resolved_model);
+    let default_prompt = || {
+        default_system_prompt_with_host_tool_prompts(
+            &cwd_str,
+            prior_reasoning_replayed,
+            &prompt_tools,
+            &host_tool_prompts,
+        )
+    };
     let mut context_paths = Vec::new();
     let base_prompt = match effective_args.system_prompt.as_deref() {
         Some(explicit) => explicit.to_string(),
         None if project_trusted => match discover_system_prompt_file(&ctx.cwd) {
-            Some(path) => read_prompt_source(&path, &mut context_paths).unwrap_or_else(|| {
-                default_system_prompt_with_tools(&cwd_str, prior_reasoning_replayed, &prompt_tools)
-            }),
-            None => {
-                default_system_prompt_with_tools(&cwd_str, prior_reasoning_replayed, &prompt_tools)
+            Some(path) => {
+                read_prompt_source(&path, &mut context_paths).unwrap_or_else(default_prompt)
             }
+            None => default_prompt(),
         },
-        None => default_system_prompt_with_tools(&cwd_str, prior_reasoning_replayed, &prompt_tools),
+        None => default_prompt(),
     };
     let mut append_texts: Vec<String> = Vec::new();
     for extra in &effective_args.append_system_prompt {
@@ -1977,6 +2066,8 @@ pub enum BuildError {
     SessionNotFound { requested: String, dir: String },
     #[error("Could not build the harness: {0}")]
     HarnessCreate(String),
+    #[error("Invalid --host-tools declaration: {0}")]
+    HostTools(String),
 }
 
 /// Keep configured factories (including package-specific auth and catalogs)
@@ -3620,6 +3711,55 @@ mod tests {
         assert!(p.contains("Re-stating the same plan without acting on it is a bug"));
         let none = default_system_prompt_with_tools("/tmp/proj", false, &[]);
         assert!(none.contains("Available tools:\n(none)"));
+    }
+
+    #[test]
+    fn default_prompt_renders_host_tool_metadata() {
+        // A host tool has no built-in snippet, so `--host-tools` metadata is the
+        // only way it gets a line and rules in the prompt; both appear only
+        // while the tool is active, and an empty map renders the old prompt.
+        let mut prompts = BTreeMap::new();
+        prompts.insert(
+            "open_file".to_string(),
+            crate::host_tools::HostToolPromptMetadata {
+                prompt_snippet: Some("  Open a file in the host editor  ".to_string()),
+                prompt_guidelines: vec![
+                    " Use open_file, not bash, to reveal a file. ".to_string(),
+                    "Be concise in your responses".to_string(),
+                    String::new(),
+                ],
+            },
+        );
+        let active = ["read".to_string(), "open_file".to_string()];
+        let p = default_system_prompt_with_host_tool_prompts("/tmp/proj", true, &active, &prompts);
+        assert!(
+            p.contains("- open_file — Open a file in the host editor"),
+            "the declared snippet must be the tool's prompt line: {p}"
+        );
+        assert!(
+            p.contains("- Use open_file, not bash, to reveal a file."),
+            "the declared guideline must reach the prompt: {p}"
+        );
+        assert_eq!(
+            p.matches("Be concise in your responses").count(),
+            1,
+            "a guideline repeating a core rule must not be stated twice: {p}"
+        );
+        // Inactive host tools contribute nothing.
+        let inactive = ["read".to_string()];
+        let p =
+            default_system_prompt_with_host_tool_prompts("/tmp/proj", true, &inactive, &prompts);
+        assert!(!p.contains("open_file"), "{p}");
+        // No declarations: byte-for-byte the prompt without host tools.
+        assert_eq!(
+            default_system_prompt_with_tools("/tmp/proj", true, &active),
+            default_system_prompt_with_host_tool_prompts(
+                "/tmp/proj",
+                true,
+                &active,
+                &BTreeMap::new()
+            )
+        );
     }
 
     #[test]

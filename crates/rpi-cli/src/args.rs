@@ -123,6 +123,10 @@ pub struct Args {
 
     pub print: bool,
     pub mode: Mode,
+    /// `--host-tools <file>`: host-declared tools for `--mode rpc`. The model
+    /// calls them like any other tool; the engine forwards the call to the host
+    /// and waits for its answer. `--mode rpc` only.
+    pub host_tools: Option<PathBuf>,
     /// `--tui-mode regular|fullscreen` controls the interactive terminal
     /// buffer. macOS defaults to regular so native selection and terminal
     /// scrollback remain available together; other platforms use fullscreen.
@@ -338,6 +342,11 @@ pub fn parse_args(args: &[String]) -> Args {
                             Mode::Text
                         }
                     };
+                }
+            }
+            "--host-tools" => {
+                if let Some(v) = take_value(&mut result, "--host-tools") {
+                    result.host_tools = Some(PathBuf::from(v));
                 }
             }
             "--tui-mode" => {
@@ -606,6 +615,7 @@ pub fn print_help() {
   --append-system-prompt <text>  Append text to the system prompt (repeatable)
   --thinking <level>             off, minimal, low, medium, high, xhigh, max
   --mode <mode>                  Output mode: text (default), json, or rpc
+  --host-tools <file>            Host-declared tools for --mode rpc (JSON array; see docs)
   --server [--port <n>] [--bind <ip>]
                                  Headless server: serve a remote-connectable agent (no TUI)
   --connect <host:port>          Remote client: connect to a `--server` instance and run the TUI
