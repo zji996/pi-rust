@@ -1,8 +1,15 @@
-# rpi for delegate (fork notes)
+# rpi for delegate and mu (fork notes)
 
 This fork builds the `rpi` binary that the [delegate](https://github.com/zji996/AIA-skills) skill
-runs as its colleague. It stays a thin patch stack on top of upstream
-[bigfish1913/pi-rust](https://github.com/bigfish1913/pi-rust); everything else is upstream as is.
+runs as its colleague and that the mu desktop drives over `--mode rpc`. It stays a thin patch stack
+on top of upstream [bigfish1913/pi-rust](https://github.com/bigfish1913/pi-rust); everything else is
+upstream as is.
+
+Tuning that only makes sense for mu (the prompt's opening identity, tool-result notes, error hints,
+host hooks) may live here when it cannot be done from the host, under three rules: one small commit
+per patch that leaves the main loop alone; the default behaviour stays byte-for-byte upstream's, and
+mu turns the patch on through a setting or flag, so delegate's binary is unaffected; anything
+upstream would also want goes upstream as a PR first.
 
 ## Branches and tags
 
