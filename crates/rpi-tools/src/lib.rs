@@ -32,8 +32,8 @@ pub mod tools;
 pub use tools::{
     create_bash_tool, create_edit_tool, create_find_tool, create_grep_tool, create_ls_tool,
     create_powershell_tool, create_read_tool, create_write_tool, with_next_steps, BashExecution,
-    BashPrepare, BashToolOptions, ExecutionToolContext, ProcessedImage, ReadImageProcessor,
-    ReadToolOptions,
+    BashPrepare, BashToolOptions, ExecutionToolContext, ImageBox, ImageView, ProcessedImage,
+    ReadImageProcessor, ReadToolOptions,
 };
 
 pub use env::{

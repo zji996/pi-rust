@@ -268,6 +268,11 @@ pub struct Settings {
     /// a `Needs decision:` line in the final report. Off ⇒ upstream's text.
     #[serde(default)]
     pub child_agent_prompt: Option<bool>,
+    /// `readImageDraft` (aia): `read` shows an image as a ~0.4 MP draft first,
+    /// and gains a `box` argument that crops one region from the original
+    /// resolution (Norvane 0117). Off ⇒ upstream's read schema, text and bytes.
+    #[serde(default)]
+    pub read_image_draft: Option<bool>,
 }
 
 /// upstream's `terminal` settings block (`TerminalSettings`). Only the fields
@@ -402,6 +407,11 @@ impl Settings {
     /// Whether the subagent prompt uses the mu wording.
     pub fn child_agent_prompt(&self) -> bool {
         self.child_agent_prompt.unwrap_or(false)
+    }
+
+    /// Whether `read` returns an image as a draft and accepts `box`.
+    pub fn read_image_draft(&self) -> bool {
+        self.read_image_draft.unwrap_or(false)
     }
 
     /// Terminal progress indicator. rpi's flat `showTerminalProgress` wins;
@@ -1283,6 +1293,14 @@ mod scoped_tests {
         assert!(on.child_agent_prompt());
         // Absent keeps upstream's subagent prompt.
         assert!(!Settings::default().child_agent_prompt());
+    }
+
+    #[test]
+    fn read_image_draft_is_read_from_settings() {
+        let on: Settings = serde_json::from_str(r#"{"readImageDraft":true}"#).unwrap();
+        assert!(on.read_image_draft());
+        // Absent keeps upstream's read schema, text and image bytes.
+        assert!(!Settings::default().read_image_draft());
     }
 
     #[test]

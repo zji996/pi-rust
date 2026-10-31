@@ -2291,6 +2291,10 @@ fn build_tools(
     if args.no_tools {
         return Vec::new();
     }
+    // Saved user defaults, read once: the read tool's image draft,
+    // `toolErrorHints` and `defaultTools` all live there (matching how the rest
+    // of this file reads settings).
+    let settings = crate::settings::load_settings().unwrap_or_default();
     // Keep the coding tools aligned with Pi and expose rpi's read-only docs
     // lookup as a default assistant capability.
     //
@@ -2308,6 +2312,12 @@ fn build_tools(
                     image_processor: Some(Arc::new(
                         rpi_tools::image_processing::InlineImageProcessor,
                     )),
+                    // `readImageDraft`: an image comes back as a ~0.4 MP draft
+                    // and `box` crops one region from the original resolution,
+                    // so a picture that is only glanced at costs a fraction of
+                    // the tokens it is resent with on every later turn. Off
+                    // keeps upstream's schema, text and bytes.
+                    image_draft: settings.read_image_draft(),
                     ..Default::default()
                 }),
             ))
@@ -2328,10 +2338,6 @@ fn build_tools(
     // Add PowerShell tool on Windows
     #[cfg(target_os = "windows")]
     all.push(("powershell", HarnessTool::new(create_powershell_tool(ctx))));
-
-    // Saved user defaults, read once: `defaultTools` and `toolErrorHints`
-    // both live there (matching how the rest of this file reads settings).
-    let settings = crate::settings::load_settings().unwrap_or_default();
 
     // `toolErrorHints`: append one English next-step line after a failed
     // read/edit/write/bash call, leaving the error text itself untouched. Off

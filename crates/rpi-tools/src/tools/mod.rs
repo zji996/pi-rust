@@ -27,6 +27,8 @@ pub use grep::create_grep_tool;
 pub use image::{create_image_tool, create_image_tool_with_config, ImageToolConfig};
 pub use ls::create_ls_tool;
 pub use powershell::create_powershell_tool;
-pub use read::{create_read_tool, ProcessedImage, ReadImageProcessor, ReadToolOptions};
+pub use read::{
+    create_read_tool, ImageBox, ImageView, ProcessedImage, ReadImageProcessor, ReadToolOptions,
+};
 pub use tool_context::ExecutionToolContext;
 pub use write::create_write_tool;
