@@ -62,6 +62,36 @@ async fn wait(manager: &ChildAgents, parent: &AgentHarness, id: &str) -> Value {
     .expect("child must finish")
 }
 
+/// `childAgentPrompt` off keeps upstream's wording byte for byte; on, the
+/// child is told it shares the parent's working directory, cannot ask the user
+/// and writes a `Needs decision:` line, with the turn budget kept as information.
+#[test]
+fn child_prompt_keeps_upstream_wording_unless_the_setting_is_on() {
+    let upstream = child_prompt("worker", 8, "list the files", false);
+    assert_eq!(
+        upstream,
+        "You are a delegated worker subagent. Complete the task in at most 8 turns. \
+Do not delegate, spawn, or ask another agent to do work. Work only in the current project and \
+return a concise final report.\n\nTask:\nlist the files"
+    );
+    let mu = child_prompt("worker", 8, "list the files", true);
+    assert!(
+        mu.contains("task handed to you by another agent, in the worker role"),
+        "{mu}"
+    );
+    assert!(mu.contains("shared with that agent"), "{mu}");
+    assert!(mu.contains("You cannot ask the user"), "{mu}");
+    assert!(mu.contains("\"Needs decision: …\""), "{mu}");
+    assert!(mu.contains("at most 8 turns"), "{mu}");
+    assert!(!mu.contains("You are a delegated"), "{mu}");
+    // The task stays last, after a blank line, in both wordings.
+    assert!(mu.ends_with("\n\nTask:\nlist the files"), "{mu}");
+    assert!(
+        upstream.ends_with("\n\nTask:\nlist the files"),
+        "{upstream}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn child_reports_and_owner_scoped_disposal_are_independent_of_parent_transcript() {
     let parent = parent(FauxScript::new().with_text("child report")).await;
