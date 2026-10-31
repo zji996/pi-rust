@@ -263,6 +263,11 @@ pub struct Settings {
     /// Off ⇒ the tool's own message, byte for byte.
     #[serde(default)]
     pub tool_error_hints: Option<bool>,
+    /// `childAgentPrompt` (aia): word the subagent prompt after Norvane's
+    /// `child.preamble.md` — shared working directory, no question to the user,
+    /// a `Needs decision:` line in the final report. Off ⇒ upstream's text.
+    #[serde(default)]
+    pub child_agent_prompt: Option<bool>,
 }
 
 /// upstream's `terminal` settings block (`TerminalSettings`). Only the fields
@@ -392,6 +397,11 @@ impl Settings {
     /// Whether a failed tool call carries a next-step hint line.
     pub fn tool_error_hints(&self) -> bool {
         self.tool_error_hints.unwrap_or(false)
+    }
+
+    /// Whether the subagent prompt uses the mu wording.
+    pub fn child_agent_prompt(&self) -> bool {
+        self.child_agent_prompt.unwrap_or(false)
     }
 
     /// Terminal progress indicator. rpi's flat `showTerminalProgress` wins;
@@ -1265,6 +1275,14 @@ mod scoped_tests {
         assert!(on.tool_error_hints());
         // Absent keeps the tools' own error text.
         assert!(!Settings::default().tool_error_hints());
+    }
+
+    #[test]
+    fn child_agent_prompt_is_read_from_settings() {
+        let on: Settings = serde_json::from_str(r#"{"childAgentPrompt":true}"#).unwrap();
+        assert!(on.child_agent_prompt());
+        // Absent keeps upstream's subagent prompt.
+        assert!(!Settings::default().child_agent_prompt());
     }
 
     #[test]
