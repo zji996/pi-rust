@@ -1260,10 +1260,12 @@ impl Shell for OsExecutionEnv {
             return Err(ExecutionError::aborted());
         }
         let exit_code = status.code().unwrap_or(0);
+        let signal = status_signal(&status);
         Ok(ShellOutput {
             stdout: stdout_buf,
             stderr: stderr_buf,
             exit_code,
+            signal,
         })
     }
 
@@ -1283,6 +1285,20 @@ impl MutatingEnv for OsExecutionEnv {
     fn mutation_registry(&self) -> &MutationQueueRegistry {
         &self.registry
     }
+}
+
+/// The signal number that terminated `status`, when the platform reports one.
+/// `exit_code` collapses such a kill to 0 (the TS `code ?? 0` rule), so this is
+/// the only way to tell "exited 0" from "killed".
+#[cfg(unix)]
+fn status_signal(status: &std::process::ExitStatus) -> Option<i32> {
+    use std::os::unix::process::ExitStatusExt;
+    status.signal()
+}
+
+#[cfg(not(unix))]
+fn status_signal(_status: &std::process::ExitStatus) -> Option<i32> {
+    None
 }
 
 /// Validate a timeout (seconds). Mirrors `resolveTimeoutMs` semantics.

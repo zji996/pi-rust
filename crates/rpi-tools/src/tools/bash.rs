@@ -82,6 +82,10 @@ pub struct BashToolOptions {
     pub default_timeout: Option<f64>,
     /// Optional async hook that can adjust command, cwd, and environment.
     pub prepare: Option<BashPrepare>,
+    /// Annotate a failing result with a bracketed note (`[exit code 7]`,
+    /// `[terminated by signal 15]`, `[cancelled]`) instead of upstream's prose
+    /// status line. Off by default: the text is then upstream's, byte for byte.
+    pub result_notes: bool,
 }
 
 /// The built-in `bash` tool. Holds an `Arc<dyn ExecutionEnv>` (read-only view
@@ -276,7 +280,12 @@ impl AgentTool for BashTool {
             }
         };
         if capture.cancelled {
-            return Err(AgentError::Tool(append_status("Command aborted".into())));
+            let status = if self.options.result_notes {
+                "[cancelled]"
+            } else {
+                "Command aborted"
+            };
+            return Err(AgentError::Tool(append_status(status.into())));
         }
         if let Some(ee) = &capture.execution_error {
             if ee.code == ExecutionErrorCode::Timeout {
@@ -294,10 +303,21 @@ impl AgentTool for BashTool {
         }
         if let Some(code) = capture.exit_code {
             if code != 0 {
-                return Err(AgentError::Tool(append_status(format!(
-                    "Command exited with code {code}"
-                ))));
+                let status = if self.options.result_notes {
+                    format!("[exit code {code}]")
+                } else {
+                    format!("Command exited with code {code}")
+                };
+                return Err(AgentError::Tool(append_status(status)));
             }
+        }
+        // A signal kill collapses to exit 0 in the capture (the TS `code ?? 0`
+        // rule). Only the notes mode says so; upstream keeps treating it as a
+        // successful run.
+        if let (true, Some(signal)) = (self.options.result_notes, capture.signal) {
+            return Err(AgentError::Tool(append_status(format!(
+                "[terminated by signal {signal}]"
+            ))));
         }
         let text = if output_text.is_empty() {
             "(no output)".to_string()
