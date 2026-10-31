@@ -384,6 +384,10 @@ pub struct PreparedExtensions {
     /// Host-declared tools (`--host-tools`), validated against the loaded
     /// extension tool names so a collision is a startup error.
     pub host_tools: crate::host_tools::HostToolBridge,
+    /// Host-handled state paths (`--host-state`). Disabled unless the flag is
+    /// given, in which case `read`/`write`/`edit`/`ls` inside the prefix are
+    /// answered by the host over the RPC channel instead of the disk.
+    pub host_state: crate::host_state::HostStateBridge,
     session_dir: PathBuf,
     runtime: tokio::runtime::Handle,
     tool_context: rpi_extensions::ToolCallContext,
@@ -500,6 +504,10 @@ pub fn prepare_extensions(
         .unwrap_or_default();
     let host_tools =
         crate::host_tools::load(args, &extension_tool_names).map_err(BuildError::HostTools)?;
+    // `--host-state` is a mode contract like `--host-tools`: rejected outside
+    // rpc mode, and the prefix has to be a directory inside `cwd` so a call can
+    // never be routed away from the project.
+    let host_state = crate::host_state::load(args, cwd).map_err(BuildError::HostState)?;
     Ok(PreparedExtensions {
         session_dir,
         runtime,
@@ -513,6 +521,7 @@ pub fn prepare_extensions(
         action_bridge,
         extension_session,
         host_tools,
+        host_state,
     })
 }
 
@@ -573,6 +582,7 @@ pub async fn build_prepared(
         session_dir,
         runtime,
         host_tools,
+        host_state,
         tool_context,
         action_host,
         harness_cell,
@@ -595,7 +605,7 @@ pub async fn build_prepared(
     // loaders below (borrowed); clone one branch so both hold a reference.
     let ctx = ExecutionToolContext::new(env_dyn.clone(), Some(mut_env));
 
-    let mut tools = build_tools(&ctx, args);
+    let mut tools = build_tools(&ctx, args, &host_state);
 
     // ---- Extensions (Part B2) ----
     // Load cdylib plugins from the resolved extension dirs, merge their tools
@@ -1139,6 +1149,7 @@ pub async fn build_prepared(
         mailbox: reload_mailbox,
         ui_dialog: ui_dialog_mailbox,
         host_tools,
+        host_state,
         ext_status: ext_status_mailbox,
         editor_text: editor_text_mailbox,
         dev_extension: None,
@@ -1317,6 +1328,10 @@ pub struct ReloadContext {
     /// the same bridge the `--mode rpc` loop relays to the client; an empty
     /// bridge is the normal case for every other mode.
     pub host_tools: crate::host_tools::HostToolBridge,
+    /// Host-handled state paths (`--host-state`). Held for the same reason:
+    /// `/reload` re-wraps the rebuilt built-in tools with this bridge, and the
+    /// `--mode rpc` loop relays its calls. Disabled is the normal case.
+    pub host_state: crate::host_state::HostStateBridge,
     /// Active `rpi dev` extension builder. `/reload` rebuilds it before
     /// swapping plugin sessions; its watcher signals `mailbox` after a
     /// successful background build.
@@ -1791,7 +1806,7 @@ where
     // prompt so the prompt lists exactly the active tools.
     let mut_env: Arc<dyn rpi_tools::MutatingEnv> = env.clone();
     let tool_ctx = rpi_tools::ExecutionToolContext::new(env_dyn.clone(), Some(mut_env));
-    let mut tools = build_tools(&tool_ctx, &effective_args);
+    let mut tools = build_tools(&tool_ctx, &effective_args, &ctx.host_state);
     merge_extension_tools(
         &mut tools,
         &extension_session,
@@ -2140,6 +2155,8 @@ pub enum BuildError {
     HarnessCreate(String),
     #[error("Invalid --host-tools declaration: {0}")]
     HostTools(String),
+    #[error("Invalid --host-state: {0}")]
+    HostState(String),
 }
 
 /// Keep configured factories (including package-specific auth and catalogs)
@@ -2266,7 +2283,11 @@ pub fn bash_options() -> rpi_tools::tools::bash::BashToolOptions {
     }
 }
 
-fn build_tools(ctx: &ExecutionToolContext, args: &Args) -> Vec<HarnessTool> {
+fn build_tools(
+    ctx: &ExecutionToolContext,
+    args: &Args,
+    host_state: &crate::host_state::HostStateBridge,
+) -> Vec<HarnessTool> {
     if args.no_tools {
         return Vec::new();
     }
@@ -2346,7 +2367,12 @@ fn build_tools(ctx: &ExecutionToolContext, args: &Args) -> Vec<HarnessTool> {
         all.retain(|(name, _)| !deny.iter().any(|d| d == name));
     }
 
-    all.into_iter().map(|(_, t)| t).collect()
+    let mut tools: Vec<HarnessTool> = all.into_iter().map(|(_, t)| t).collect();
+    // `--host-state`: a call whose path lands inside the prefix goes to the
+    // host instead of the disk. Names, schemas and the tool list are untouched,
+    // and with no prefix this is a no-op.
+    host_state.wrap(&mut tools);
+    tools
 }
 
 /// Resolve the active tool names from the constructed tools when no explicit
@@ -4053,7 +4079,11 @@ Current working directory: /tmp/proj"
         let env_dyn: Arc<dyn rpi_tools::ExecutionEnv> = env.clone();
         let mut_env: Arc<dyn rpi_tools::MutatingEnv> = env.clone();
         let context = ExecutionToolContext::new(env_dyn, Some(mut_env));
-        let tools = build_tools(&context, &Args::default());
+        let tools = build_tools(
+            &context,
+            &Args::default(),
+            &crate::host_state::HostStateBridge::disabled(),
+        );
 
         let replay_of = |name: &str| {
             tools
@@ -4080,16 +4110,60 @@ Current working directory: /tmp/proj"
         }
     }
 
+    /// `--host-state` changes dispatch only: with the flag on, every built-in
+    /// tool keeps its name, description, JSON schema and replay policy, so the
+    /// provider prefix cache sees the same tool list as before.
+    #[test]
+    fn host_state_wrapping_keeps_the_built_in_schemas() {
+        let directory = tempfile::tempdir().unwrap();
+        let env = Arc::new(OsExecutionEnv::with_cwd(directory.path().to_path_buf()));
+        let env_dyn: Arc<dyn rpi_tools::ExecutionEnv> = env.clone();
+        let mut_env: Arc<dyn rpi_tools::MutatingEnv> = env.clone();
+        let context = ExecutionToolContext::new(env_dyn, Some(mut_env));
+        let bridge = crate::host_state::load(
+            &crate::args::Args {
+                mode: crate::args::Mode::Rpc,
+                host_state: Some(".mu/state".to_string()),
+                ..Default::default()
+            },
+            directory.path(),
+        )
+        .unwrap();
+
+        let plain = build_tools(
+            &context,
+            &Args::default(),
+            &crate::host_state::HostStateBridge::disabled(),
+        );
+        let wrapped = build_tools(&context, &Args::default(), &bridge);
+        assert_eq!(plain.len(), wrapped.len());
+        for (plain, wrapped) in plain.iter().zip(&wrapped) {
+            let name = &plain.tool.schema().name;
+            assert_eq!(name, &wrapped.tool.schema().name);
+            assert_eq!(
+                serde_json::to_value(plain.tool.schema()).unwrap(),
+                serde_json::to_value(wrapped.tool.schema()).unwrap(),
+                "{name} schema changed under --host-state"
+            );
+            assert_eq!(plain.replay, wrapped.replay, "{name} replay policy changed");
+            assert_eq!(plain.tool.label(), wrapped.tool.label());
+        }
+    }
+
     #[test]
     fn default_tools_include_docs_lookup() {
         let env = Arc::new(OsExecutionEnv::with_cwd(PathBuf::from(".")));
         let env_dyn: Arc<dyn rpi_tools::ExecutionEnv> = env.clone();
         let mut_env: Arc<dyn rpi_tools::MutatingEnv> = env.clone();
         let context = ExecutionToolContext::new(env_dyn, Some(mut_env));
-        let names: Vec<String> = build_tools(&context, &Args::default())
-            .iter()
-            .map(|tool| tool.tool.schema().name.clone())
-            .collect();
+        let names: Vec<String> = build_tools(
+            &context,
+            &Args::default(),
+            &crate::host_state::HostStateBridge::disabled(),
+        )
+        .iter()
+        .map(|tool| tool.tool.schema().name.clone())
+        .collect();
 
         // `docs` is a default capability; the legacy rpi-only lookup tools stay
         // unregistered. Asserted by membership (not exact equality) because

@@ -127,6 +127,11 @@ pub struct Args {
     /// calls them like any other tool; the engine forwards the call to the host
     /// and waits for its answer. `--mode rpc` only.
     pub host_tools: Option<PathBuf>,
+    /// `--host-state <prefix>`: a directory relative to the working directory
+    /// (mu passes `.mu/state`) whose paths the host keeps in memory, not on
+    /// disk. `read`/`write`/`edit`/`ls` calls that normalize into it are
+    /// forwarded to the host instead of touching the disk; `--mode rpc` only.
+    pub host_state: Option<String>,
     /// `--tui-mode regular|fullscreen` controls the interactive terminal
     /// buffer. macOS defaults to regular so native selection and terminal
     /// scrollback remain available together; other platforms use fullscreen.
@@ -347,6 +352,11 @@ pub fn parse_args(args: &[String]) -> Args {
             "--host-tools" => {
                 if let Some(v) = take_value(&mut result, "--host-tools") {
                     result.host_tools = Some(PathBuf::from(v));
+                }
+            }
+            "--host-state" => {
+                if let Some(v) = take_value(&mut result, "--host-state") {
+                    result.host_state = Some(v);
                 }
             }
             "--tui-mode" => {
@@ -616,6 +626,7 @@ pub fn print_help() {
   --thinking <level>             off, minimal, low, medium, high, xhigh, max
   --mode <mode>                  Output mode: text (default), json, or rpc
   --host-tools <file>            Host-declared tools for --mode rpc (JSON array; see docs)
+  --host-state <prefix>          Host-handled state paths for --mode rpc (e.g. .mu/state; see docs)
   --server [--port <n>] [--bind <ip>]
                                  Headless server: serve a remote-connectable agent (no TUI)
   --connect <host:port>          Remote client: connect to a `--server` instance and run the TUI

@@ -310,7 +310,7 @@ async fn run_inner() -> i32 {
             // A bad `--host-tools` declaration is a startup-contract mistake
             // (wrong mode, bad names), not a runtime failure.
             return match error {
-                BuildError::HostTools(_) => EXIT_USAGE,
+                BuildError::HostTools(_) | BuildError::HostState(_) => EXIT_USAGE,
                 _ => EXIT_RUNTIME,
             };
         }
@@ -595,6 +595,7 @@ async fn run_inner() -> i32 {
                         reload_context.ui_dialog.clone(),
                         oauth_snapshot,
                         reload_context.host_tools.clone(),
+                        reload_context.host_state.clone(),
                     )
                     .await
                 };
@@ -1030,6 +1031,11 @@ fn print_build_error(e: &BuildError) {
             eprintln!("error: {e}");
             eprintln!();
             eprintln!("Write the declaration as a JSON array of {{name, description, parameters}} entries.");
+        }
+        BuildError::HostState(_) => {
+            eprintln!("error: {e}");
+            eprintln!();
+            eprintln!("--host-state takes a directory inside the working directory (for example .mu/state) and works in --mode rpc only.");
         }
         _ => eprintln!("error: {e}"),
     }

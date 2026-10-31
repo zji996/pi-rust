@@ -307,9 +307,12 @@ fn emit_agent_event(event: &AgentEvent) {
 /// `"cancelled":true`). Host-declared tools (`--host-tools`) travel over the
 /// same channel: the bridge's calls are written as
 /// `{"type":"host_tool_call",…}` and settled by a `host_tool_result` command
-/// (see [`crate::host_tools`]). A `prompt` runs in its own task so this loop
-/// keeps reading — that is what lets `abort`, dialog answers, and host tool
-/// results arrive mid-run.
+/// (see [`crate::host_tools`]). Host-handled state paths (`--host-state`) use
+/// the same channel: a `read`/`write`/`edit`/`ls` inside the prefix becomes a
+/// `host_state_call` event settled by a `host_state_result` command, and
+/// `host_state_config` sets its timeouts (see [`crate::host_state`]). A
+/// `prompt` runs in its own task so this loop keeps reading — that is what lets
+/// `abort`, dialog answers, host tool results and state results arrive mid-run.
 pub async fn rpc(
     harness: &AgentHarness,
     mut agent_events: Option<tokio::sync::broadcast::Receiver<AgentEvent>>,
@@ -317,6 +320,7 @@ pub async fn rpc(
     ui_dialog: rpi_extensions::UiDialogMailbox,
     oauth_snapshot: Option<Arc<rpi_extensions::RegistrySnapshot>>,
     host_tools: crate::host_tools::HostToolBridge,
+    host_state: crate::host_state::HostStateBridge,
 ) -> i32 {
     rpc_with_io(
         harness,
@@ -325,6 +329,7 @@ pub async fn rpc(
         ui_dialog,
         oauth_snapshot,
         host_tools,
+        host_state,
         tokio::io::BufReader::new(tokio::io::stdin()),
         std::io::stdout(),
     )
@@ -338,6 +343,7 @@ async fn rpc_with_io<R, W>(
     ui_dialog: rpi_extensions::UiDialogMailbox,
     oauth_snapshot: Option<Arc<rpi_extensions::RegistrySnapshot>>,
     host_tools: crate::host_tools::HostToolBridge,
+    host_state: crate::host_state::HostStateBridge,
     input: R,
     output: W,
 ) -> i32
@@ -510,6 +516,28 @@ where
         })
     });
 
+    // Bridge `--host-state`: the wrapped tools push a call into the bridge, this
+    // task writes it as `host_state_call`, and the commands below settle the
+    // oneshot the tool awaits. Same shape as the host-tool relay above.
+    let host_state_task = host_state.take_receiver().map(|mut calls| {
+        let out = stdout.clone();
+        let stop = pump_stop.clone();
+        let bridge = host_state.clone();
+        tokio::spawn(async move {
+            loop {
+                let event = tokio::select! {
+                    _ = stop.cancelled() => break,
+                    event = calls.recv() => event,
+                };
+                let Some(event) = event else { break };
+                write_line(&out, &event.to_json()).await;
+            }
+            // The loop is closing: no further answer can be read, so release
+            // every call still waiting instead of leaving the run hung.
+            bridge.disconnect();
+        })
+    });
+
     // A `prompt` runs in a spawned task so this loop keeps reading stdin while
     // the run is active — otherwise `abort` and `ui_dialog_response` could not
     // be delivered mid-run. Only one prompt may be in flight at a time.
@@ -521,7 +549,14 @@ where
     use tokio::io::AsyncBufReadExt;
 
     let mut lines = input.lines();
-    write_line(&stdout, &rpc_protocol::ready(&host_tools.enabled_names())).await;
+    write_line(
+        &stdout,
+        &rpc_protocol::ready(
+            &host_tools.enabled_names(),
+            host_state.advertisement().as_ref(),
+        ),
+    )
+    .await;
 
     loop {
         let incoming = tokio::select! {
@@ -643,6 +678,51 @@ where
                     .await;
                 } else if let Err(error) = result {
                     eprintln!("[rpi] host_tool_result: {error}");
+                }
+                continue;
+            }
+            "host_state_result" => {
+                let parsed = serde_json::from_value::<crate::host_state::HostStateResultCommand>(
+                    msg.clone(),
+                );
+                let result = match parsed {
+                    Ok(command) => {
+                        let request_id = command.request_id.clone();
+                        host_state
+                            .respond(&request_id, command.text, command.is_error)
+                            .map(|_| serde_json::json!({"accepted": true, "requestId": request_id}))
+                    }
+                    Err(error) => Err(format!("invalid host_state_result: {error}")),
+                };
+                if msg.get("id").is_some() {
+                    write_line(
+                        &stdout,
+                        &rpc_protocol::response(Some(id), "host_state_result", result.map(Some)),
+                    )
+                    .await;
+                } else if let Err(error) = result {
+                    eprintln!("[rpi] host_state_result: {error}");
+                }
+                continue;
+            }
+            "host_state_config" => {
+                let parsed = serde_json::from_value::<crate::host_state::HostStateConfigCommand>(
+                    msg.clone(),
+                );
+                let result = match parsed {
+                    Ok(command) => host_state.configure(command).map(|_| {
+                        serde_json::json!({"accepted": true, "advertisement": host_state.advertisement()})
+                    }),
+                    Err(error) => Err(format!("invalid host_state_config: {error}")),
+                };
+                if msg.get("id").is_some() {
+                    write_line(
+                        &stdout,
+                        &rpc_protocol::response(Some(id), "host_state_config", result.map(Some)),
+                    )
+                    .await;
+                } else if let Err(error) = result {
+                    eprintln!("[rpi] host_state_config: {error}");
                 }
                 continue;
             }
@@ -877,6 +957,9 @@ where
     }
     let _ = dialog_task.await;
     if let Some(task) = host_tool_task {
+        let _ = task.await;
+    }
+    if let Some(task) = host_state_task {
         let _ = task.await;
     }
     if let Some(task) = event_task {
@@ -2456,6 +2539,7 @@ mod tests {
                 rpi_extensions::UiDialogMailbox::new(),
                 None,
                 crate::host_tools::HostToolBridge::empty(),
+                crate::host_state::HostStateBridge::disabled(),
                 tokio::io::BufReader::new(input.as_bytes()),
                 output.clone(),
             )
@@ -2691,6 +2775,7 @@ mod tests {
                 rpi_extensions::UiDialogMailbox::new(),
                 None,
                 crate::host_tools::HostToolBridge::empty(),
+                crate::host_state::HostStateBridge::disabled(),
                 tokio::io::BufReader::new(input.as_bytes()),
                 output.clone(),
             )
@@ -2744,6 +2829,7 @@ mod tests {
                 rpi_extensions::UiDialogMailbox::new(),
                 Some(Arc::new(registry.snapshot())),
                 crate::host_tools::HostToolBridge::empty(),
+                crate::host_state::HostStateBridge::disabled(),
                 tokio::io::BufReader::new(input.as_bytes()),
                 output.clone()
             )
@@ -2902,10 +2988,30 @@ mod tests {
         )
     }
 
+    /// Starts the RPC loop with both host bridges; the host-tools-only variant
+    /// below is the common case.
     fn start_rpc_with_host_tools(
         (harness, events): (AgentHarness, tokio::sync::broadcast::Receiver<AgentEvent>),
         ui: rpi_extensions::UiDialogMailbox,
         bridge: crate::host_tools::HostToolBridge,
+    ) -> (
+        tokio::io::DuplexStream,
+        RpcOutput,
+        tokio::task::JoinHandle<i32>,
+    ) {
+        start_rpc_with_bridges(
+            (harness, events),
+            ui,
+            bridge,
+            crate::host_state::HostStateBridge::disabled(),
+        )
+    }
+
+    fn start_rpc_with_bridges(
+        (harness, events): (AgentHarness, tokio::sync::broadcast::Receiver<AgentEvent>),
+        ui: rpi_extensions::UiDialogMailbox,
+        bridge: crate::host_tools::HostToolBridge,
+        host_state: crate::host_state::HostStateBridge,
     ) -> (
         tokio::io::DuplexStream,
         RpcOutput,
@@ -2922,6 +3028,7 @@ mod tests {
                 ui,
                 None,
                 bridge,
+                host_state,
                 tokio::io::BufReader::new(input),
                 captured,
             )
@@ -3275,6 +3382,7 @@ mod tests {
             rpi_extensions::UiDialogMailbox::new(),
             None,
             crate::host_tools::HostToolBridge::empty(),
+            crate::host_state::HostStateBridge::disabled(),
             tokio::io::BufReader::new(input.as_bytes()),
             output.clone(),
         )
@@ -3305,6 +3413,7 @@ mod tests {
             rpi_extensions::UiDialogMailbox::new(),
             None,
             crate::host_tools::HostToolBridge::empty(),
+            crate::host_state::HostStateBridge::disabled(),
             tokio::io::BufReader::new(&input[..]),
             output.clone(),
         )
@@ -3336,6 +3445,7 @@ mod tests {
             rpi_extensions::UiDialogMailbox::new(),
             None,
             crate::host_tools::HostToolBridge::empty(),
+            crate::host_state::HostStateBridge::disabled(),
             tokio::io::BufReader::new(&b"{\"type\":\"compact\",\"id\":1}\n"[..]),
             output.clone(),
         )
@@ -3376,6 +3486,7 @@ mod tests {
             rpi_extensions::UiDialogMailbox::new(),
             None,
             crate::host_tools::HostToolBridge::empty(),
+            crate::host_state::HostStateBridge::disabled(),
             tokio::io::BufReader::new(&b""[..]),
             output.clone(),
         )
@@ -3486,6 +3597,7 @@ mod tests {
             rpi_extensions::UiDialogMailbox::new(),
             None,
             crate::host_tools::HostToolBridge::empty(),
+            crate::host_state::HostStateBridge::disabled(),
             tokio::io::BufReader::new(
                 &b"{\"type\":\"prompt\",\"id\":1,\"message\":\"test\"}\n"[..],
             ),
@@ -3552,6 +3664,7 @@ mod tests {
                 ui.clone(),
                 None,
                 crate::host_tools::HostToolBridge::empty(),
+                crate::host_state::HostStateBridge::disabled(),
                 tokio::io::BufReader::new(input),
                 BrokenOutput,
             ),
@@ -3815,6 +3928,122 @@ mod tests {
         assert_eq!(retry["maxRetries"], 10);
         assert_eq!(retry["delayMs"], 8_000);
         assert_eq!(retry["error"], "503 service unavailable");
+    }
+
+    /// `--host-state`: `ready` advertises the prefix and both commands/events,
+    /// `host_state_config` is applied, and a result for a request no call is
+    /// waiting for is rejected instead of being silently dropped.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rpc_host_state_advertises_configures_and_rejects_unknown_results() {
+        use tokio::io::AsyncWriteExt;
+        let directory = tempfile::tempdir().unwrap();
+        let bridge = crate::host_state::load(
+            &crate::args::Args {
+                mode: crate::args::Mode::Rpc,
+                host_state: Some(".mu/state".to_string()),
+                ..Default::default()
+            },
+            directory.path(),
+        )
+        .unwrap();
+        let (harness, _) = rpc_test_harness("unused", 0.0).await;
+        let (_emitter, events) = rpi_agent::events::BroadcastEmitter::new(256);
+        let (mut client, output, task) = start_rpc_with_bridges(
+            (harness, events),
+            rpi_extensions::UiDialogMailbox::new(),
+            crate::host_tools::HostToolBridge::empty(),
+            bridge,
+        );
+        let ready = output.wait_for(|message| message["type"] == "ready").await;
+        assert_eq!(ready["hostState"]["prefix"], ".mu/state");
+        assert_eq!(
+            ready["hostState"]["timeoutMs"],
+            crate::host_state::DEFAULT_TIMEOUT_MS
+        );
+        let commands = ready["supportedCommands"].as_array().unwrap();
+        for command in ["host_state_result", "host_state_config"] {
+            assert!(commands.iter().any(|value| value == command), "{command}");
+        }
+        let events = ready["supportedEvents"].as_array().unwrap();
+        for event in ["host_state_call", "host_state_cancelled"] {
+            assert!(events.iter().any(|value| value == event), "{event}");
+        }
+
+        client
+            .write_all(
+                br#"{"type":"host_state_config","id":1,"timeoutMs":1234,"waitTimeoutMs":4321,"waitPaths":["ask"]}
+"#,
+            )
+            .await
+            .unwrap();
+        let configured = output.wait_for(|message| message["id"] == 1).await;
+        assert_eq!(configured["success"], true);
+        assert_eq!(configured["data"]["advertisement"]["timeoutMs"], 1234);
+        assert_eq!(configured["data"]["advertisement"]["waitTimeoutMs"], 4321);
+
+        client
+            .write_all(
+                br#"{"type":"host_state_result","id":2,"requestId":"gone","text":"late"}
+"#,
+            )
+            .await
+            .unwrap();
+        let rejected = output.wait_for(|message| message["id"] == 2).await;
+        assert_eq!(rejected["success"], false);
+        assert!(
+            rejected["error"]
+                .as_str()
+                .unwrap()
+                .contains("unknown host state request"),
+            "{rejected}"
+        );
+
+        client
+            .write_all(b"{\"type\":\"stop\",\"id\":3}\n")
+            .await
+            .unwrap();
+        assert_eq!(task.await.unwrap(), 0);
+    }
+
+    /// The lock for "no flag, nothing changes": without `--host-state` the
+    /// `ready` payload keeps its exact key set, the three historical events, and
+    /// no host-state command (the const only names what the binary can parse).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rpc_ready_without_host_state_is_unchanged() {
+        use tokio::io::AsyncWriteExt;
+        let (harness, _) = rpc_test_harness("unused", 0.0).await;
+        let (mut client, output, task) =
+            start_test_rpc(harness, rpi_extensions::UiDialogMailbox::new());
+        let ready = output.wait_for(|message| message["type"] == "ready").await;
+        let keys: Vec<&String> = ready.as_object().unwrap().keys().collect();
+        assert_eq!(
+            keys,
+            [
+                "type",
+                "protocol",
+                "piCompatibilityTarget",
+                "supportedCommands",
+                "supportedEvents",
+                "hostTools",
+                "semantics",
+                "limits",
+                "parityComplete",
+            ]
+        );
+        assert_eq!(
+            ready["supportedEvents"],
+            serde_json::json!([
+                "session_entry_committed",
+                "host_tool_call",
+                "host_tool_cancelled"
+            ])
+        );
+        assert!(!ready.to_string().contains("host_state"));
+        client
+            .write_all(b"{\"type\":\"stop\",\"id\":1}\n")
+            .await
+            .unwrap();
+        assert_eq!(task.await.unwrap(), 0);
     }
 }
 
