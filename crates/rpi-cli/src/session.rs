@@ -2316,6 +2316,10 @@ pub fn bash_options() -> rpi_tools::tools::bash::BashToolOptions {
         command_prefix: settings.shell_command_prefix.clone(),
         default_timeout: Some(default),
         prepare: None,
+        // `toolResultNotes`: `[exit code N]` / `[terminated by signal N]` /
+        // `[cancelled]` instead of the prose status line. Off keeps upstream's
+        // text byte for byte.
+        result_notes: settings.tool_result_notes(),
     }
 }
 

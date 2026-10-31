@@ -76,12 +76,16 @@ impl From<Vec<u8>> for FileContent {
 
 /// Result of `Shell::exec`. Mirrors the TS inline return type
 /// `{ stdout, stderr, exitCode }`. Signal kills collapse to `exit_code: 0`
-/// (matching the TS `code ?? 0` rule).
+/// (matching the TS `code ?? 0` rule); `signal` is the signal number where the
+/// platform reports one (Unix), so a caller that wants to say *why* a command
+/// died can — the exit code alone cannot.
 #[derive(Debug, Clone)]
 pub struct ShellOutput {
     pub stdout: String,
     pub stderr: String,
     pub exit_code: i32,
+    /// `Some(n)` when the process was terminated by signal `n`.
+    pub signal: Option<i32>,
 }
 
 /// Mirrors TS `ShellExecOptions` (note: `timeout` is in **seconds**, matching

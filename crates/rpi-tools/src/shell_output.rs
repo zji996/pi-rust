@@ -56,6 +56,10 @@ pub struct ShellCaptureResult {
     pub full_output_path: Option<PathBuf>,
     pub last_line_bytes: usize,
     pub exit_code: Option<i32>,
+    /// The signal that killed the command, when the platform reported one.
+    /// `exit_code` is 0 in that case (the TS `code ?? 0` rule), so this is what
+    /// tells a killed command from a successful one.
+    pub signal: Option<i32>,
     pub cancelled: bool,
     pub truncated: bool,
     pub execution_error: Option<ExecutionError>,
@@ -361,6 +365,7 @@ pub async fn execute_shell_with_capture(
                 full_output_path: full_output_path.clone(),
                 last_line_bytes,
                 exit_code: if cancelled { None } else { Some(out.exit_code) },
+                signal: if cancelled { None } else { out.signal },
                 cancelled,
                 truncated: truncated_flag,
                 execution_error: None,
@@ -376,6 +381,7 @@ pub async fn execute_shell_with_capture(
                     full_output_path,
                     last_line_bytes,
                     exit_code: None,
+                    signal: None,
                     cancelled: true,
                     truncated: truncated_flag,
                     execution_error: None,
@@ -387,6 +393,7 @@ pub async fn execute_shell_with_capture(
                     full_output_path,
                     last_line_bytes,
                     exit_code: None,
+                    signal: None,
                     cancelled: false,
                     truncated: truncated_flag,
                     execution_error: Some(e),
