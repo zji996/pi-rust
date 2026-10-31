@@ -103,6 +103,40 @@ pub fn default_system_prompt_with_tools(
     )
 }
 
+/// The opening paragraph of the built-in prompt. `systemPromptIntro` replaces
+/// exactly this text; leaving the setting unset renders it unchanged.
+pub const DEFAULT_SYSTEM_PROMPT_INTRO: &str =
+    "You are an expert coding assistant operating inside rpi, a coding agent harness. \
+You help users by reading files, executing commands, editing code, and writing new files.";
+
+/// Host-side replacements for the built-in prompt (`systemPromptIntro` /
+/// `systemPromptGuidelines` in settings). `Default` leaves both sections as
+/// upstream wrote them.
+#[derive(Clone, Debug, Default)]
+pub struct SystemPromptOverrides {
+    /// Replaces [`DEFAULT_SYSTEM_PROMPT_INTRO`] when set.
+    pub intro: Option<String>,
+    /// Appended to the end of the `Guidelines:` list, trimmed and deduped
+    /// against the rules already there.
+    pub guidelines: Vec<String>,
+}
+
+impl SystemPromptOverrides {
+    /// The overrides saved in settings.json.
+    pub fn from_settings(settings: &crate::settings::Settings) -> Self {
+        Self {
+            intro: settings.system_prompt_intro().map(str::to_owned),
+            guidelines: settings.system_prompt_guidelines().to_vec(),
+        }
+    }
+
+    /// True when nothing would change: the prompt then renders exactly as it
+    /// does without the setting.
+    pub fn is_empty(&self) -> bool {
+        self.intro.is_none() && self.guidelines.is_empty()
+    }
+}
+
 /// [`default_system_prompt_with_tools`] plus the prompt contributions declared
 /// for host tools (`--host-tools`). A declared `promptSnippet` replaces the
 /// built-in one-line description (a host tool has none otherwise, so it would
@@ -113,6 +147,25 @@ pub fn default_system_prompt_with_host_tool_prompts(
     prior_reasoning_replayed: bool,
     tools: &[String],
     host_tools: &BTreeMap<String, crate::host_tools::HostToolPromptMetadata>,
+) -> String {
+    default_system_prompt_with_overrides(
+        cwd,
+        prior_reasoning_replayed,
+        tools,
+        host_tools,
+        &SystemPromptOverrides::default(),
+    )
+}
+
+/// [`default_system_prompt_with_host_tool_prompts`] plus the host's own wording
+/// (`systemPromptIntro`, `systemPromptGuidelines`). An empty override renders
+/// the default prompt byte for byte.
+pub fn default_system_prompt_with_overrides(
+    cwd: &str,
+    prior_reasoning_replayed: bool,
+    tools: &[String],
+    host_tools: &BTreeMap<String, crate::host_tools::HostToolPromptMetadata>,
+    overrides: &SystemPromptOverrides,
 ) -> String {
     let has = |name: &str| tools.iter().any(|tool| tool == name);
     let todo_hint = if has("todo") {
@@ -193,11 +246,24 @@ pub fn default_system_prompt_with_host_tool_prompts(
             }
         }
     }
+    // The host's own rules (`systemPromptGuidelines`) come last: a repeated
+    // core rule is dropped rather than stated twice.
+    for rule in &overrides.guidelines {
+        let rule = rule.trim();
+        if !rule.is_empty() && seen.insert(rule.to_string()) {
+            guidelines.push(format!("- {rule}"));
+        }
+    }
     let guidelines = guidelines.join("\n");
 
+    let intro = overrides
+        .intro
+        .as_deref()
+        .map(str::trim_end)
+        .unwrap_or(DEFAULT_SYSTEM_PROMPT_INTRO);
+
     format!(
-        "You are an expert coding assistant operating inside rpi, a coding agent harness. \
-You help users by reading files, executing commands, editing code, and writing new files.
+        "{intro}
 
 Available tools:
 {tool_lines}
@@ -585,12 +651,18 @@ pub async fn build_prepared(
     // builder takes only those contributions (an empty map is the common case
     // and renders byte-for-byte what it did before).
     let host_tool_prompts = host_tools.prompt_metadata();
+    // `systemPromptIntro` / `systemPromptGuidelines` (settings.json): mu's own
+    // opening paragraph and extra rules. Unset, the overrides are empty and the
+    // prompt is the default one, byte for byte.
+    let prompt_overrides =
+        SystemPromptOverrides::from_settings(&crate::settings::load_settings().unwrap_or_default());
     let default_prompt = || {
-        default_system_prompt_with_host_tool_prompts(
+        default_system_prompt_with_overrides(
             &cwd_str,
             prior_reasoning_replayed,
             &prompt_tools,
             &host_tool_prompts,
+            &prompt_overrides,
         )
     };
     let mut context_paths = Vec::new();
@@ -3684,6 +3756,90 @@ mod tests {
         let found = list_session_files_sync(&root);
         assert!(found.iter().any(|p| p == &file));
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `systemPromptIntro` / `systemPromptGuidelines` are mu's: unset they must
+    /// render exactly the prompt upstream produces, and set they replace the
+    /// opening paragraph and append (deduped) rules at the end of `Guidelines`.
+    #[test]
+    fn prompt_overrides_replace_the_intro_and_append_guidelines() {
+        // The locked default: every byte of it, so a change to the opening
+        // paragraph or a guideline cannot pass unnoticed.
+        let default = default_system_prompt_with_tools("/tmp/proj", false, &[]);
+        assert_eq!(
+            default,
+            "You are an expert coding assistant operating inside rpi, a coding agent harness. \
+You help users by reading files, executing commands, editing code, and writing new files.
+
+Available tools:
+(none)
+
+Guidelines:
+- Reply in the same language as the user's latest message (the conversation's language when
+  that message is too short to tell), unless the user asks for another.
+- Be concise in your responses
+- Show file paths clearly when working with files
+- Prefer the smallest change that solves the problem
+- Your reasoning is not carried into your next turn; only your visible replies and tool
+  output come back. Before each batch of tool calls, write one short line naming the step you
+  are on and what remains, and say which step is done when it lands.
+  Re-stating the same plan without acting on it is a bug, not progress.
+- Read only what you need. If a file or search result was already shown earlier in this
+  conversation, use it instead of fetching it again.
+
+Current working directory: /tmp/proj"
+        );
+        // No overrides means the same bytes through the override entry point.
+        assert!(SystemPromptOverrides::default().is_empty());
+        assert_eq!(
+            default,
+            default_system_prompt_with_overrides(
+                "/tmp/proj",
+                false,
+                &[],
+                &BTreeMap::new(),
+                &SystemPromptOverrides::default()
+            )
+        );
+
+        let overrides = SystemPromptOverrides {
+            intro: Some("You are a coding colleague working for mu.".to_string()),
+            guidelines: vec![
+                " Ask the host before touching another project. ".to_string(),
+                "Be concise in your responses".to_string(),
+                String::new(),
+            ],
+        };
+        let p = default_system_prompt_with_overrides(
+            "/tmp/proj",
+            false,
+            &[],
+            &BTreeMap::new(),
+            &overrides,
+        );
+        assert!(
+            p.starts_with("You are a coding colleague working for mu.\n\nAvailable tools:"),
+            "{p}"
+        );
+        assert!(!p.contains("expert coding assistant"), "{p}");
+        assert!(
+            p.contains(
+                "  conversation, use it instead of fetching it again.\n\
+- Ask the host before touching another project.\n\nCurrent working directory: /tmp/proj"
+            ),
+            "the host's rule must follow the core ones: {p}"
+        );
+        assert_eq!(
+            p.matches("Be concise in your responses").count(),
+            1,
+            "a guideline repeating a core rule must not be stated twice: {p}"
+        );
+        assert_eq!(
+            p.matches("- Ask the host before touching another project.")
+                .count(),
+            1,
+            "{p}"
+        );
     }
 
     /// The default CLI tool set plus the `todo` tool its bundled plugins add.
