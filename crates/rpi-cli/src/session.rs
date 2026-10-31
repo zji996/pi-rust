@@ -2365,12 +2365,25 @@ fn build_tools(ctx: &ExecutionToolContext, args: &Args) -> Vec<HarnessTool> {
     #[cfg(target_os = "windows")]
     all.push(("powershell", HarnessTool::new(create_powershell_tool(ctx))));
 
+    // Saved user defaults, read once: `defaultTools` and `toolErrorHints`
+    // both live there (matching how the rest of this file reads settings).
+    let settings = crate::settings::load_settings().unwrap_or_default();
+
+    // `toolErrorHints`: append one English next-step line after a failed
+    // read/edit/write/bash call, leaving the error text itself untouched. Off
+    // (the default), the tools are the upstream ones with upstream's text.
+    if settings.tool_error_hints() {
+        for (name, tool) in all.iter_mut() {
+            if matches!(*name, "read" | "bash" | "edit" | "write") {
+                tool.tool = rpi_tools::with_next_steps(Arc::clone(&tool.tool));
+            }
+        }
+    }
+
     // Apply default_tools from settings (if no CLI override)
     if args.tools.is_none() {
-        if let Ok(settings) = crate::settings::load_settings() {
-            if let Some(default_tools) = &settings.default_tools {
-                all.retain(|(name, _)| default_tools.iter().any(|t| t == name));
-            }
+        if let Some(default_tools) = &settings.default_tools {
+            all.retain(|(name, _)| default_tools.iter().any(|t| t == name));
         }
     }
 
