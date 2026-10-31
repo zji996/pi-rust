@@ -31,6 +31,8 @@
 use image::{DynamicImage, ImageFormat};
 use std::io::Cursor;
 
+use crate::tools::read::{ImageView, ProcessedImage};
+
 /// Pi's default inline limits: 2000 pixels per side and 4.5 MiB of base64.
 pub const INLINE_IMAGE_MAX_SIDE: u32 = 2000;
 pub const INLINE_IMAGE_MAX_BASE64_BYTES: usize = 9 * 1024 * 1024 / 2;
@@ -132,9 +134,36 @@ pub fn validate_rpc_inline_image(data: &str, mime_type: &str) -> Result<(), Stri
 #[path = "image_processing_rpc_tests.rs"]
 mod rpc_tests;
 
+/// Pixels in a `readImageDraft` draft: the whole image is shrunk until `w * h`
+/// fits, which is the ~0.4 MP a model reads a picture at before zooming in.
+pub const DRAFT_IMAGE_MAX_PIXELS: u64 = 400_000;
+
+/// The draft size for a `width`×`height` image: the whole image shrunk until it
+/// fits [`DRAFT_IMAGE_MAX_PIXELS`], aspect ratio kept, never enlarged.
+fn draft_dimensions(width: u32, height: u32) -> (u32, u32) {
+    let pixels = width as u64 * height as u64;
+    if pixels <= DRAFT_IMAGE_MAX_PIXELS {
+        return (width, height);
+    }
+    let scale = (DRAFT_IMAGE_MAX_PIXELS as f64 / pixels as f64).sqrt();
+    // Flooring both sides keeps `w * h` inside the budget by construction.
+    (
+        ((width as f64 * scale) as u32).max(1),
+        ((height as f64 * scale) as u32).max(1),
+    )
+}
+
 /// Decode, orient, resize and encode an image for model input. Small supported
 /// images retain their original bytes; oversized images fall back to JPEG.
-pub fn prepare_inline_image(bytes: &[u8]) -> Result<crate::tools::read::ProcessedImage, String> {
+pub fn prepare_inline_image(bytes: &[u8]) -> Result<ProcessedImage, String> {
+    prepare_inline_image_view(bytes, ImageView::Whole)
+}
+
+/// [`prepare_inline_image`] for a `readImageDraft` view: the whole image as a
+/// draft, or the box of it the model asked for. The EXIF orientation is applied
+/// first, as upstream does, so both the draft size and the box coordinates
+/// refer to the upright image the model sees.
+pub fn prepare_inline_image_view(bytes: &[u8], view: ImageView) -> Result<ProcessedImage, String> {
     use base64::{engine::general_purpose::STANDARD, Engine};
     use image::ImageDecoder;
     let reader = image::ImageReader::new(Cursor::new(bytes))
@@ -146,20 +175,38 @@ pub fn prepare_inline_image(bytes: &[u8]) -> Result<crate::tools::read::Processe
     img.apply_orientation(orientation);
     let original = (img.width(), img.height());
     let mime = crate::image::detect_supported_image_mime_type(bytes);
+    let crop = match view {
+        ImageView::Box(box_) => Some(box_.pixels(original.0, original.1)),
+        _ => None,
+    };
+    let draft = view == ImageView::Draft;
     let base64_len = bytes.len().div_ceil(3) * 4;
-    if matches!(
-        mime,
-        Some("image/png" | "image/jpeg" | "image/gif" | "image/webp")
-    ) && original.0 <= INLINE_IMAGE_MAX_SIDE
+    if crop.is_none()
+        && matches!(
+            mime,
+            Some("image/png" | "image/jpeg" | "image/gif" | "image/webp")
+        )
+        && original.0 <= INLINE_IMAGE_MAX_SIDE
         && original.1 <= INLINE_IMAGE_MAX_SIDE
         && base64_len < INLINE_IMAGE_MAX_BASE64_BYTES
         && orientation == image::metadata::Orientation::NoTransforms
+        && (!draft || original.0 as u64 * original.1 as u64 <= DRAFT_IMAGE_MAX_PIXELS)
     {
-        return Ok(crate::tools::read::ProcessedImage {
+        return Ok(ProcessedImage {
             data: STANDARD.encode(bytes),
             mime_type: mime.unwrap().into(),
             hints: vec![],
+            note: None,
         });
+    }
+    if let Some((x, y, width, height)) = crop {
+        img = img.crop_imm(x, y, width, height);
+    }
+    if draft {
+        let (width, height) = draft_dimensions(img.width(), img.height());
+        if (width, height) != (img.width(), img.height()) {
+            img = img.resize_exact(width, height, image::imageops::FilterType::Lanczos3);
+        }
     }
     img = resize_image(
         img,
@@ -198,19 +245,52 @@ pub fn prepare_inline_image(bytes: &[u8]) -> Result<crate::tools::read::Processe
                     hints.push(format!("[Image converted from {mime} to {}.]", candidate.1));
                 }
             }
-            if original != (img.width(), img.height()) {
-                hints.push(format!(
-                    "[Image resized from {}x{} to {}x{}.]",
-                    original.0,
-                    original.1,
-                    img.width(),
-                    img.height()
-                ));
-            }
-            return Ok(crate::tools::read::ProcessedImage {
+            let shown = (img.width(), img.height());
+            let note = match view {
+                ImageView::Whole => {
+                    if original != shown {
+                        hints.push(format!(
+                            "[Image resized from {}x{} to {}x{}.]",
+                            original.0, original.1, shown.0, shown.1
+                        ));
+                    }
+                    None
+                }
+                ImageView::Draft => Some(format!(
+                    "Image {}×{}, shown as a {}×{} draft. For detail, read again with \
+                     box=[left,top,right,bottom] (0-1000, relative to the whole image); \
+                     box=[0,0,1000,1000] is the full image at full clarity.",
+                    original.0, original.1, shown.0, shown.1
+                )),
+                ImageView::Box(box_) => {
+                    let (x, y, width, height) = crop.unwrap_or((0, 0, shown.0, shown.1));
+                    let shown_text = if shown == (width, height) {
+                        format!("shown at its original {}×{} resolution", shown.0, shown.1)
+                    } else {
+                        format!("shown as {}×{}", shown.0, shown.1)
+                    };
+                    Some(format!(
+                        "Image {}×{}, box=[{},{},{},{}] = pixels [{},{}]-[{},{}] ({}×{}), {shown_text}.",
+                        original.0,
+                        original.1,
+                        box_.left,
+                        box_.top,
+                        box_.right,
+                        box_.bottom,
+                        x,
+                        y,
+                        x + width,
+                        y + height,
+                        width,
+                        height,
+                    ))
+                }
+            };
+            return Ok(ProcessedImage {
                 data: STANDARD.encode(candidate.0),
                 mime_type: candidate.1.into(),
                 hints,
+                note,
             });
         }
         let bounds = ((img.width() * 3 / 4).max(1), (img.height() * 3 / 4).max(1));
@@ -277,7 +357,20 @@ impl crate::tools::read::ReadImageProcessor for InlineImageProcessor {
             data: STANDARD.encode(bytes),
             mime_type: mime.into(),
             hints: vec![],
+            note: None,
         })
+    }
+
+    /// `readImageDraft`: the whole image as a ~0.4 MP draft, or the `box` of it
+    /// cropped from the original resolution and then put through the same inline
+    /// limits as any other image.
+    fn process_view(
+        &self,
+        bytes: &[u8],
+        _mime_type: &str,
+        view: ImageView,
+    ) -> Result<ProcessedImage, String> {
+        prepare_inline_image_view(bytes, view)
     }
 }
 
@@ -577,5 +670,95 @@ mod tests {
     fn test_detect_image_mime_too_short() {
         let short = vec![0x89, 0x50];
         assert_eq!(detect_image_mime(&short), None);
+    }
+
+    /// A 4000×3000 photo is generated in code; no binary fixture. `luma8` keeps
+    /// the encode quick and says nothing about the colours, which these tests do
+    /// not look at.
+    fn png_of(width: u32, height: u32) -> Vec<u8> {
+        encode_image(
+            &DynamicImage::new_luma8(width, height),
+            Some(OutputFormat::Png),
+        )
+        .unwrap()
+    }
+
+    fn decoded(processed: &ProcessedImage) -> DynamicImage {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        image::load_from_memory(&STANDARD.decode(&processed.data).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn draft_shrinks_a_large_image_and_keeps_a_small_one_as_is() {
+        let large = png_of(4000, 3000);
+        let processed = prepare_inline_image_view(&large, ImageView::Draft).unwrap();
+        let shown = decoded(&processed);
+        assert_eq!((shown.width(), shown.height()), (730, 547));
+        assert!(730 * 547 <= DRAFT_IMAGE_MAX_PIXELS as u32);
+        assert_eq!(
+            processed.note.as_deref(),
+            Some(
+                "Image 4000×3000, shown as a 730×547 draft. For detail, read again with \
+                 box=[left,top,right,bottom] (0-1000, relative to the whole image); \
+                 box=[0,0,1000,1000] is the full image at full clarity."
+            )
+        );
+
+        // Already inside the draft budget (and the inline limits): the bytes are
+        // upstream's, unchanged, and there is nothing to explain.
+        let small = png_of(320, 240);
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        let processed = prepare_inline_image_view(&small, ImageView::Draft).unwrap();
+        assert_eq!(STANDARD.decode(&processed.data).unwrap(), small);
+        assert!(processed.hints.is_empty());
+        assert_eq!(processed.note, None);
+    }
+
+    #[test]
+    fn box_crops_the_named_pixels_from_the_original_resolution() {
+        let image = png_of(4000, 3000);
+        // A quarter of each side: pixels 1000,750 to 3000,2250, which fits the
+        // inline limits, so the crop itself is the original resolution.
+        let processed = prepare_inline_image_view(
+            &image,
+            ImageView::Box(crate::tools::read::ImageBox {
+                left: 250,
+                top: 250,
+                right: 750,
+                bottom: 750,
+            }),
+        )
+        .unwrap();
+        let shown = decoded(&processed);
+        assert_eq!((shown.width(), shown.height()), (2000, 1500));
+        assert_eq!(
+            processed.note.as_deref(),
+            Some(
+                "Image 4000×3000, box=[250,250,750,750] = pixels [1000,750]-[3000,2250] \
+                 (2000×1500), shown at its original 2000×1500 resolution."
+            )
+        );
+
+        // The whole image (`box=[0,0,1000,1000]`) is the draft's pixels at the
+        // inline limit, so it is reported as resized rather than as original.
+        let processed = prepare_inline_image_view(
+            &image,
+            ImageView::Box(crate::tools::read::ImageBox {
+                left: 0,
+                top: 0,
+                right: 1000,
+                bottom: 1000,
+            }),
+        )
+        .unwrap();
+        let shown = decoded(&processed);
+        assert_eq!((shown.width(), shown.height()), (2000, 1500));
+        assert_eq!(
+            processed.note.as_deref(),
+            Some(
+                "Image 4000×3000, box=[0,0,1000,1000] = pixels [0,0]-[4000,3000] \
+                 (4000×3000), shown as 2000×1500."
+            )
+        );
     }
 }
