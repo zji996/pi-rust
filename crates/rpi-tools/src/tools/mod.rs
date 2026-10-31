@@ -8,8 +8,8 @@ pub mod edit;
 pub mod edit_apply;
 pub mod edit_diagnostics;
 pub mod edit_diff;
-pub mod external;
 pub mod error_hints;
+pub mod external;
 pub mod find;
 pub mod grep;
 pub mod image;
@@ -22,11 +22,11 @@ pub mod write;
 
 pub use bash::{create_bash_tool, BashExecution, BashPrepare, BashToolOptions};
 pub use edit::create_edit_tool;
+pub use error_hints::with_next_steps;
 pub use external::{
     create_external_tool, validate_external_tool_definitions, ExternalToolBackend,
     ExternalToolDefinition,
 };
-pub use error_hints::with_next_steps;
 pub use find::create_find_tool;
 pub use grep::create_grep_tool;
 pub use image::{create_image_tool, create_image_tool_with_config, ImageToolConfig};
