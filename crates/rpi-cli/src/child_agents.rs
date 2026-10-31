@@ -310,7 +310,14 @@ impl ChildAgents {
                 return Err(error.to_string());
             }
         };
-        let prompt = format!("You are a delegated {role} subagent. Complete the task in at most {turns} turns. Do not delegate, spawn, or ask another agent to do work. Work only in the current project and return a concise final report.\n\nTask:\n{task}");
+        // `childAgentPrompt`: mu words the subagent prompt after Norvane's
+        // `child.preamble.md` (shared working directory, no question to the
+        // user, a `Needs decision:` line instead). Read per spawn so a settings
+        // change applies without a restart; unset keeps upstream's text.
+        let mu_wording = crate::settings::load_settings()
+            .unwrap_or_default()
+            .child_agent_prompt();
+        let prompt = child_prompt(role, turns, task, mu_wording);
         let worker = job.clone();
         let execution_scope = child.execution_scope.clone();
         let cleanup_harness = child.harness.clone();
@@ -336,6 +343,34 @@ impl ChildAgents {
         });
         Ok(json!({"childId":id,"sessionId":id,"status":"running"}))
     }
+}
+
+/// The task prompt handed to a child agent.
+///
+/// `mu_wording` (settings `childAgentPrompt`) substitutes Norvane's
+/// `child.preamble.md` idea: the child shares the parent's working directory,
+/// cannot ask the user, and writes a `Needs decision: …` line in its final
+/// report instead of guessing. The turn budget stays in the text, as
+/// information rather than an order. `false` renders upstream's prompt byte for
+/// byte.
+fn child_prompt(role: &str, turns: u32, task: &str, mu_wording: bool) -> String {
+    if !mu_wording {
+        return format!(
+            "You are a delegated {role} subagent. Complete the task in at most {turns} turns. Do not delegate, spawn, or ask another agent to do work. Work only in the current project and return a concise final report.\n\nTask:\n{task}"
+        );
+    }
+    format!(
+        "You are a helper agent working on one task handed to you by another agent, in the {role} \
+role. You do not see that agent's conversation; the task below is all you have. Do the task, then \
+reply with the result: what you found or changed, where, and anything left unresolved. You have at \
+most {turns} turns.\n\
+Your working directory is the folder of the conversation that handed you this task, shared with \
+that agent: change only the files and folders your task assigns to you, and read the rest freely.\n\
+You cannot ask the user. If something needs a decision, write a line \"Needs decision: …\" with the \
+question in your final report and stop; otherwise take the safest assumption and say which one.\n\
+Do not delegate the work to another agent.\n\n\
+Task:\n{task}"
+    )
 }
 
 fn bounded_number(
