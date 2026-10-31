@@ -154,6 +154,117 @@ async fn abort_returns_error() {
     assert!(msg.contains("aborted") || msg.contains("Aborted"), "{msg}");
 }
 
+/// `toolResultNotes`: the failing status becomes a bracketed note at the end of
+/// the preserved output instead of upstream's prose line; `is_error` stays.
+#[tokio::test]
+async fn result_notes_annotate_a_nonzero_exit() {
+    let (env, ctx) = fresh_context();
+    env.register_shell(
+        "fail",
+        ShellScript {
+            stdout: "failed".into(),
+            stderr: String::new(),
+            exit_code: 7,
+            delay_ms: None,
+        },
+    )
+    .await;
+    let tool = rpi_tools::create_bash_tool(
+        &ctx,
+        Some(BashToolOptions {
+            result_notes: true,
+            ..Default::default()
+        }),
+    );
+    let err = run_bash(tool, serde_json::json!({ "command": "fail" }))
+        .await
+        .expect_err("nonzero exit stays an error");
+    assert_eq!(err_text(&err), "failed\n\n[exit code 7]", "{err:?}");
+}
+
+#[tokio::test]
+async fn result_notes_annotate_a_cancellation() {
+    let (env, ctx) = fresh_context();
+    env.register_shell(
+        "slow",
+        ShellScript {
+            stdout: "x".into(),
+            stderr: String::new(),
+            exit_code: 0,
+            delay_ms: Some(1000),
+        },
+    )
+    .await;
+    let tool = rpi_tools::create_bash_tool(
+        &ctx,
+        Some(BashToolOptions {
+            result_notes: true,
+            ..Default::default()
+        }),
+    );
+    let signal = CancellationToken::new();
+    let sig = signal.clone();
+    let handle = tokio::spawn(async move {
+        tool.execute(
+            "bash-cancel",
+            serde_json::json!({ "command": "slow" }),
+            sig,
+            Arc::new(|_p| ()),
+        )
+        .await
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    signal.cancel();
+    let err = handle.await.expect("join").expect_err("cancel → Err");
+    let msg = err_text(&err);
+    assert!(msg.ends_with("[cancelled]"), "{msg}");
+    assert!(!msg.contains("Command aborted"), "{msg}");
+}
+
+/// A command killed by a signal collapses to exit 0 upstream; the notes mode
+/// names the signal instead of reporting a success.
+#[cfg(unix)]
+#[tokio::test]
+async fn result_notes_name_the_signal_that_killed_a_command() {
+    use rpi_tools::{OsExecutionEnv, Shell, ShellExecOptions};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let env = Arc::new(OsExecutionEnv::with_cwd(tmp.path().to_path_buf()));
+    match env
+        .exec(
+            "echo ready",
+            ShellExecOptions {
+                timeout: Some(5.0),
+                ..Default::default()
+            },
+        )
+        .await
+    {
+        Err(error) if error.code == rpi_tools::ExecutionErrorCode::ShellUnavailable => {
+            eprintln!("skipping signal note test: {error}");
+            return;
+        }
+        result => {
+            result.expect("shell is available");
+        }
+    }
+    let ctx = ExecutionToolContext::new(env, None);
+    let tool = rpi_tools::create_bash_tool(
+        &ctx,
+        Some(BashToolOptions {
+            result_notes: true,
+            ..Default::default()
+        }),
+    );
+    let err = run_bash(tool, serde_json::json!({ "command": "kill -9 $$" }))
+        .await
+        .expect_err("a killed command is not a success in notes mode");
+    assert!(
+        err_text(&err).contains("[terminated by signal 9]"),
+        "{err:?}"
+    );
+}
+
 #[tokio::test]
 async fn persists_truncated_full_output_to_temp_file() {
     let (env, ctx) = fresh_context();
@@ -228,6 +339,7 @@ async fn supports_command_prefix() {
             command_prefix: Some("value=hello".into()),
             default_timeout: None,
             prepare: None,
+            result_notes: false,
         }),
     );
     // The shell_script prefix-matches on the composed command start; echo is the

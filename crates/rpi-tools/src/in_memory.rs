@@ -776,6 +776,7 @@ impl Shell for InMemoryExecutionEnv {
             stdout: script.stdout,
             stderr: script.stderr,
             exit_code: script.exit_code,
+            signal: None,
         })
     }
 
