@@ -248,6 +248,15 @@ pub struct Settings {
     /// built-in budgets.
     #[serde(default)]
     pub thinking_budgets: Option<rpi_ai::ThinkingBudgets>,
+    /// `systemPromptIntro` (aia): replaces the first paragraph of the built-in
+    /// system prompt. Absent ⇒ upstream's opening paragraph, byte for byte.
+    #[serde(default)]
+    pub system_prompt_intro: Option<String>,
+    /// `systemPromptGuidelines` (aia): extra guidelines appended to the
+    /// built-in prompt's `Guidelines:` section, trimmed and deduped against the
+    /// core ones like a host tool's `promptGuidelines`.
+    #[serde(default)]
+    pub system_prompt_guidelines: Option<Vec<String>>,
 }
 
 /// upstream's `terminal` settings block (`TerminalSettings`). Only the fields
@@ -354,6 +363,19 @@ impl Settings {
     pub fn show_images(&self) -> Option<bool> {
         self.show_images
             .or_else(|| self.terminal.as_ref().and_then(|t| t.show_images))
+    }
+
+    /// `systemPromptIntro`, trimmed; empty counts as unset.
+    pub fn system_prompt_intro(&self) -> Option<&str> {
+        self.system_prompt_intro
+            .as_deref()
+            .map(str::trim)
+            .filter(|intro| !intro.is_empty())
+    }
+
+    /// `systemPromptGuidelines` as the prompt builder wants them.
+    pub fn system_prompt_guidelines(&self) -> &[String] {
+        self.system_prompt_guidelines.as_deref().unwrap_or(&[])
     }
 
     /// Terminal progress indicator. rpi's flat `showTerminalProgress` wins;
@@ -1214,6 +1236,24 @@ mod scoped_tests {
         assert_eq!(raw["piOnlyField"], "keep-me");
         assert_eq!(raw["scopedModels"][0], "m1");
         assert_eq!(raw["theme"], "dark");
+    }
+
+    #[test]
+    fn system_prompt_overrides_are_read_from_settings() {
+        let settings: Settings = serde_json::from_str(
+            r#"{"systemPromptIntro":"  You are a coding colleague.  ",
+                "systemPromptGuidelines":[" Ask first. ",""]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            settings.system_prompt_intro(),
+            Some("You are a coding colleague.")
+        );
+        assert_eq!(settings.system_prompt_guidelines().len(), 2);
+        // Unset (or blank) leaves the default prompt alone.
+        let empty: Settings = serde_json::from_str("{\"systemPromptIntro\":\"   \"}").unwrap();
+        assert_eq!(empty.system_prompt_intro(), None);
+        assert!(empty.system_prompt_guidelines().is_empty());
     }
 
     #[test]
