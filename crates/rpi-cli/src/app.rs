@@ -400,7 +400,12 @@ async fn run_inner() -> i32 {
         Ok(prepared) => prepared,
         Err(error) => {
             print_build_error(&error);
-            return EXIT_RUNTIME;
+            // A bad `--host-state` prefix is a startup-contract mistake (wrong
+            // mode, a path outside the project), not a runtime failure.
+            return match error {
+                BuildError::HostState(_) => EXIT_USAGE,
+                _ => EXIT_RUNTIME,
+            };
         }
     };
     extension_prepare.finish();
@@ -699,6 +704,7 @@ async fn run_inner() -> i32 {
                         reload_context.ui_dialog.clone(),
                         oauth_snapshot,
                         parsed.rpc_message_updates,
+                        reload_context.host_state.clone(),
                     )
                     .await
                 };
@@ -1129,6 +1135,11 @@ fn print_build_error(e: &BuildError) {
             eprintln!("error: {e}");
             eprintln!();
             eprintln!("List saved sessions with the /session command in interactive mode.");
+        }
+        BuildError::HostState(_) => {
+            eprintln!("error: {e}");
+            eprintln!();
+            eprintln!("--host-state takes a directory inside the working directory (for example .mu/state) and works in --mode rpc only.");
         }
         _ => eprintln!("error: {e}"),
     }

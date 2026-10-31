@@ -18,6 +18,7 @@
 | 子 agent 配置继承、权限与生命周期 | [宿主管理的子 agent](extensions/subagents.md) |
 | Native RPC 精确启动资源、工具与观测（Stage A） | [Resource selection RPC](resource-selection-rpc.md) |
 | 无头服务端与远程 TUI | [远程模式](remote/user-guide.md) |
+| 宿主处理的状态路径 `--host-state`（英文协议） | [host-state.md](host-state.md) |
 | Agent 与扩展调试 | [Rust 调试指南](debugging/rust-debugging.md) |
 | Windows 上修饰键 + Enter 失效（终端改写 vs 守卫） | [Shift+Enter 排查](debugging/windows-shift-enter.md) |
 | 重复思考、取消与崩溃恢复排查 | [问题复盘](debugging/llm-repetition-forensics.md)（历史证据与修复过程） |

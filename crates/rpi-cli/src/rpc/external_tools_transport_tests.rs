@@ -25,6 +25,7 @@ mod external_transport {
                     rpi_extensions::UiDialogMailbox::new(),
                     None,
                     crate::args::RpcMessageUpdates::default(),
+                    crate::host_state::HostStateBridge::disabled(),
                     tokio::io::BufReader::with_capacity(127, input.as_slice()),
                     output,
                 ),
@@ -48,6 +49,7 @@ mod external_transport {
                 rpi_extensions::UiDialogMailbox::new(),
                 None,
                 crate::args::RpcMessageUpdates::default(),
+                crate::host_state::HostStateBridge::disabled(),
                 tokio::io::BufReader::new(
                     &b"\n \t\r\n{\"id\":1,\"type\":\"ping\"}\r\n{\"id\":2,\"type\":\"ping\"}"[..],
                 ),
@@ -161,6 +163,7 @@ mod external_transport {
                 mailbox,
                 None,
                 crate::args::RpcMessageUpdates::default(),
+                crate::host_state::HostStateBridge::disabled(),
                 tokio::io::BufReader::new(input),
                 writer,
             )

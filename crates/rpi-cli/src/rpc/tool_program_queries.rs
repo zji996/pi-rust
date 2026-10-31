@@ -157,7 +157,8 @@ mod tests {
 
     #[tokio::test]
     async fn branch_identity_profile_and_strict_rpc_arguments() {
-        let ready = super::super::protocol::ready(crate::args::RpcMessageUpdates::CompactDeltas);
+        let ready =
+            super::super::protocol::ready(crate::args::RpcMessageUpdates::CompactDeltas, None);
         assert_eq!(
             ready["toolProgramBranch"],
             json!({"version":1,
