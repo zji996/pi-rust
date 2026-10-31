@@ -156,6 +156,24 @@ pub enum Command {
         #[serde(default)]
         cancelled: bool,
     },
+    /// The host's answer to a `host_state_call`.
+    HostStateResult {
+        #[serde(rename = "requestId")]
+        request_id: String,
+        #[serde(default)]
+        text: String,
+        #[serde(rename = "isError", default)]
+        is_error: bool,
+    },
+    /// The host's timeouts for `--host-state` calls.
+    HostStateConfig {
+        #[serde(rename = "timeoutMs", default)]
+        timeout_ms: Option<u64>,
+        #[serde(rename = "waitTimeoutMs", default)]
+        wait_timeout_ms: Option<u64>,
+        #[serde(rename = "waitPaths", default)]
+        wait_paths: Option<Vec<String>>,
+    },
     Ping,
     Stop,
 }
@@ -226,6 +244,8 @@ pub const SUPPORTED_COMMANDS: &[&str] = &[
     "get_available_tools",
     "set_active_tools",
     "ui_dialog_response",
+    "host_state_result",
+    "host_state_config",
     "ping",
     "stop",
 ];
@@ -254,13 +274,36 @@ pub fn response(id: Option<Value>, command: &str, result: Result<Option<Value>, 
     out
 }
 
-pub fn ready(mode: crate::args::RpcMessageUpdates) -> Value {
-    json!({
+pub fn ready(
+    mode: crate::args::RpcMessageUpdates,
+    host_state: Option<&crate::host_state::HostStateAdvertisement>,
+) -> Value {
+    // `--host-state` is off by default, and then `ready` is upstream's payload
+    // byte for byte: the feature's command, events and settings only appear when
+    // the flag is given.
+    let enabled = host_state.is_some();
+    let commands: Vec<&str> = SUPPORTED_COMMANDS
+        .iter()
+        .copied()
+        .filter(|command| enabled || !matches!(*command, "host_state_result" | "host_state_config"))
+        .collect();
+    let mut events = vec![
+        "session_entry_committed",
+        "external_tool_request",
+        "external_tool_request_closed",
+        "file_io_request",
+        "file_io_request_closed",
+    ];
+    if enabled {
+        events.push("host_state_call");
+        events.push("host_state_cancelled");
+    }
+    let mut value = json!({
         "type": "ready",
         "protocol": "rpi",
         "piCompatibilityTarget": PI_BASELINE,
-        "supportedCommands": SUPPORTED_COMMANDS,
-        "supportedEvents": ["session_entry_committed", "external_tool_request", "external_tool_request_closed", "file_io_request", "file_io_request_closed"],
+        "supportedCommands": commands,
+        "supportedEvents": events,
         "promptContent": super::prompt_content::prompt_capabilities(),
         "fileIO": super::file_io::capabilities(),
         "semantics": {
@@ -272,7 +315,11 @@ pub fn ready(mode: crate::args::RpcMessageUpdates) -> Value {
         },
         "limits": {"frameBytes": MAX_FRAME_BYTES, "maxConcurrentPrompts": 1},
         "parityComplete": false
-    })
+    });
+    if let Some(host_state) = host_state {
+        value["hostState"] = json!(host_state);
+    }
+    value
 }
 
 /// Only expose capability metadata, never provider credentials or headers.
@@ -324,9 +371,12 @@ mod tests {
             crate::args::RpcMessageUpdates::CompactDeltas,
             crate::args::RpcMessageUpdates::Snapshot,
         ] {
-            assert_eq!(ready(mode)["semantics"]["messageUpdates"], mode.as_str());
+            assert_eq!(
+                ready(mode, None)["semantics"]["messageUpdates"],
+                mode.as_str()
+            );
         }
-        let value = ready(crate::args::RpcMessageUpdates::default());
+        let value = ready(crate::args::RpcMessageUpdates::default(), None);
         assert_eq!(value["protocol"], "rpi");
         assert_eq!(value["semantics"]["messageIds"], "sessionEntryId-v1");
         assert_eq!(value["semantics"]["settlementEvent"], "agent_settled");
@@ -339,7 +389,7 @@ mod tests {
 
     #[test]
     fn ready_advertises_the_read_only_history_snapshot() {
-        let value = ready(crate::args::RpcMessageUpdates::default());
+        let value = ready(crate::args::RpcMessageUpdates::default(), None);
         assert!(value["supportedCommands"]
             .as_array()
             .unwrap()
@@ -349,7 +399,7 @@ mod tests {
 
     #[test]
     fn ready_advertises_resuming_an_interrupted_run() {
-        let value = ready(crate::args::RpcMessageUpdates::default());
+        let value = ready(crate::args::RpcMessageUpdates::default(), None);
         assert!(value["supportedCommands"]
             .as_array()
             .unwrap()
@@ -359,7 +409,7 @@ mod tests {
 
     #[test]
     fn ready_advertises_compaction() {
-        let value = ready(crate::args::RpcMessageUpdates::default());
+        let value = ready(crate::args::RpcMessageUpdates::default(), None);
         assert!(value["supportedCommands"]
             .as_array()
             .unwrap()
@@ -459,6 +509,93 @@ mod tests {
                 if provider == "example"
                     && action == "begin"
                     && input["code"] == "fixture"
+        ));
+    }
+
+    #[test]
+    fn ready_without_host_state_hides_its_commands_and_events() {
+        // `--host-state` is off by default: the payload is upstream's, so a
+        // host that does not use the flag sees no trace of it.
+        let value = ready(crate::args::RpcMessageUpdates::default(), None);
+        assert!(value.get("hostState").is_none());
+        let commands = value["supportedCommands"].as_array().unwrap();
+        for command in ["host_state_result", "host_state_config"] {
+            assert!(!commands.iter().any(|value| value == command), "{command}");
+        }
+        let events = value["supportedEvents"].as_array().unwrap();
+        for event in ["host_state_call", "host_state_cancelled"] {
+            assert!(!events.iter().any(|value| value == event), "{event}");
+        }
+    }
+
+    #[test]
+    fn ready_advertises_host_state_when_enabled() {
+        let advertisement = crate::host_state::HostStateAdvertisement {
+            prefix: ".mu/state".to_string(),
+            timeout_ms: 30_000,
+            wait_timeout_ms: 120_000,
+        };
+        let value = ready(
+            crate::args::RpcMessageUpdates::default(),
+            Some(&advertisement),
+        );
+        let commands = value["supportedCommands"].as_array().unwrap();
+        for command in ["host_state_result", "host_state_config"] {
+            assert!(commands.iter().any(|value| value == command), "{command}");
+        }
+        let events = value["supportedEvents"].as_array().unwrap();
+        for event in ["host_state_call", "host_state_cancelled"] {
+            assert!(events.iter().any(|value| value == event), "{event}");
+        }
+        assert_eq!(
+            value["hostState"],
+            json!({"prefix": ".mu/state", "timeoutMs": 30_000, "waitTimeoutMs": 120_000})
+        );
+    }
+
+    #[test]
+    fn host_state_command_payloads_keep_their_fields() {
+        let request: Request = serde_json::from_value(json!({
+            "type": "host_state_result", "requestId": "r1", "text": "Asked topic.", "isError": true
+        }))
+        .unwrap();
+        assert!(matches!(
+            request.command,
+            Command::HostStateResult { request_id, text, is_error }
+                if request_id == "r1" && text == "Asked topic." && is_error
+        ));
+        // `text` and `isError` are optional; a bare acceptance is not enough to
+        // read as success, but it must parse.
+        let request: Request = serde_json::from_value(json!({
+            "type": "host_state_result", "requestId": "r2"
+        }))
+        .unwrap();
+        assert!(matches!(
+            request.command,
+            Command::HostStateResult { request_id, text, is_error }
+                if request_id == "r2" && text.is_empty() && !is_error
+        ));
+
+        let request: Request = serde_json::from_value(json!({
+            "type": "host_state_config", "timeoutMs": 1000, "waitTimeoutMs": 5000,
+            "waitPaths": ["ask"]
+        }))
+        .unwrap();
+        assert!(matches!(
+            request.command,
+            Command::HostStateConfig { timeout_ms, wait_timeout_ms, wait_paths }
+                if timeout_ms == Some(1000) && wait_timeout_ms == Some(5000)
+                    && wait_paths == Some(vec!["ask".to_string()])
+        ));
+        // Every field is optional: setting one timeout leaves the other values.
+        let request: Request = serde_json::from_value(json!({
+            "type": "host_state_config", "timeoutMs": 1000
+        }))
+        .unwrap();
+        assert!(matches!(
+            request.command,
+            Command::HostStateConfig { timeout_ms, wait_timeout_ms, wait_paths }
+                if timeout_ms == Some(1000) && wait_timeout_ms.is_none() && wait_paths.is_none()
         ));
     }
 

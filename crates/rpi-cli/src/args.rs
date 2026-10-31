@@ -143,6 +143,11 @@ pub struct Args {
     pub print: bool,
     pub mode: Mode,
     pub rpc_message_updates: RpcMessageUpdates,
+    /// `--host-state <prefix>`: a directory relative to the working directory
+    /// (mu passes `.mu/state`) whose paths the host keeps in memory, not on
+    /// disk. `read`/`write`/`edit`/`ls` calls that normalize into it are
+    /// forwarded to the host instead of touching the disk; `--mode rpc` only.
+    pub host_state: Option<String>,
     /// `--tui-mode regular|fullscreen` controls the interactive terminal
     /// buffer. macOS defaults to regular so native selection and terminal
     /// scrollback remain available together; other platforms use fullscreen.
@@ -372,6 +377,11 @@ pub fn parse_args(args: &[String]) -> Args {
                             "Invalid --rpc-message-updates \"{other}\". Valid: snapshot, compact-deltas"
                         )),
                     }
+                }
+            }
+            "--host-state" => {
+                if let Some(v) = take_value(&mut result, "--host-state") {
+                    result.host_state = Some(v);
                 }
             }
             "--tui-mode" => {
@@ -665,6 +675,7 @@ pub fn print_help() {
   --thinking <level>             off, minimal, low, medium, high, xhigh, max
   --mode <mode>                  Output mode: text (default), json, or rpc
   --rpc-message-updates <mode>   RPC updates: compact-deltas (default) or snapshot (legacy)
+  --host-state <prefix>          Host-handled state paths for --mode rpc (e.g. .mu/state; see docs)
   --server [--port <n>] [--bind <ip>]
                                  Headless server: serve a remote-connectable agent (no TUI)
   --connect <host:port>          Remote client: connect to a `--server` instance and run the TUI
