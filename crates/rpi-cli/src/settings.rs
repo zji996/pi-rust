@@ -262,6 +262,11 @@ pub struct Settings {
     /// status line. Off ⇒ upstream's text, byte for byte.
     #[serde(default)]
     pub tool_result_notes: Option<bool>,
+    /// `toolErrorHints` (aia): append one English next-step line to a failed
+    /// read/edit/write/bash call, keeping the original error text untouched.
+    /// Off ⇒ the tool's own message, byte for byte.
+    #[serde(default)]
+    pub tool_error_hints: Option<bool>,
 }
 
 /// upstream's `terminal` settings block (`TerminalSettings`). Only the fields
@@ -386,6 +391,11 @@ impl Settings {
     /// Whether bash results carry the `[exit code N]` style notes.
     pub fn tool_result_notes(&self) -> bool {
         self.tool_result_notes.unwrap_or(false)
+    }
+
+    /// Whether a failed tool call carries a next-step hint line.
+    pub fn tool_error_hints(&self) -> bool {
+        self.tool_error_hints.unwrap_or(false)
     }
 
     /// Terminal progress indicator. rpi's flat `showTerminalProgress` wins;
@@ -1274,6 +1284,14 @@ mod scoped_tests {
         assert!(!Settings::default().tool_result_notes());
         let off: Settings = serde_json::from_str(r#"{"toolResultNotes":false}"#).unwrap();
         assert!(!off.tool_result_notes());
+    }
+
+    #[test]
+    fn tool_error_hints_are_read_from_settings() {
+        let on: Settings = serde_json::from_str(r#"{"toolErrorHints":true}"#).unwrap();
+        assert!(on.tool_error_hints());
+        // Absent keeps the tools' own error text.
+        assert!(!Settings::default().tool_error_hints());
     }
 
     #[test]
