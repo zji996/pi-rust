@@ -190,6 +190,7 @@ impl Shell for StreamingEnv {
                 stdout: String::new(),
                 stderr: String::new(),
                 exit_code: 0,
+                signal: None,
             });
         }
         self.inner.exec(command, options).await

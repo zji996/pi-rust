@@ -257,6 +257,11 @@ pub struct Settings {
     /// core ones like a host tool's `promptGuidelines`.
     #[serde(default)]
     pub system_prompt_guidelines: Option<Vec<String>>,
+    /// `toolResultNotes` (aia): annotate a bash result with `[exit code N]`,
+    /// `[terminated by signal N]` or `[cancelled]` instead of upstream's prose
+    /// status line. Off ⇒ upstream's text, byte for byte.
+    #[serde(default)]
+    pub tool_result_notes: Option<bool>,
 }
 
 /// upstream's `terminal` settings block (`TerminalSettings`). Only the fields
@@ -376,6 +381,11 @@ impl Settings {
     /// `systemPromptGuidelines` as the prompt builder wants them.
     pub fn system_prompt_guidelines(&self) -> &[String] {
         self.system_prompt_guidelines.as_deref().unwrap_or(&[])
+    }
+
+    /// Whether bash results carry the `[exit code N]` style notes.
+    pub fn tool_result_notes(&self) -> bool {
+        self.tool_result_notes.unwrap_or(false)
     }
 
     /// Terminal progress indicator. rpi's flat `showTerminalProgress` wins;
@@ -1254,6 +1264,16 @@ mod scoped_tests {
         let empty: Settings = serde_json::from_str("{\"systemPromptIntro\":\"   \"}").unwrap();
         assert_eq!(empty.system_prompt_intro(), None);
         assert!(empty.system_prompt_guidelines().is_empty());
+    }
+
+    #[test]
+    fn tool_result_notes_are_read_from_settings() {
+        let on: Settings = serde_json::from_str(r#"{"toolResultNotes":true}"#).unwrap();
+        assert!(on.tool_result_notes());
+        // Absent keeps upstream's bash result text.
+        assert!(!Settings::default().tool_result_notes());
+        let off: Settings = serde_json::from_str(r#"{"toolResultNotes":false}"#).unwrap();
+        assert!(!off.tool_result_notes());
     }
 
     #[test]
