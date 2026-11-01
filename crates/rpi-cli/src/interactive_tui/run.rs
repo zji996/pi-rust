@@ -523,7 +523,9 @@ pub(super) fn read_clipboard_image() -> Result<Option<rpi_ai::types::ImageConten
     }
     Ok(Some(rpi_ai::types::ImageContent {
         kind: rpi_ai::types::ImageContentType,
-        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        data: base64::engine::general_purpose::STANDARD
+            .encode(bytes)
+            .into(),
         mime_type: "image/png".into(),
     }))
 }
@@ -758,7 +760,7 @@ pub(super) fn add_image_preview(
     image: &rpi_ai::types::ImageContent,
     show: bool,
 ) {
-    if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&image.data) {
+    if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&*image.data) {
         // Kitty's f=100 payload must be PNG, regardless of the model MIME type.
         let bytes = if image.mime_type == "image/png" {
             bytes
