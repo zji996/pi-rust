@@ -376,11 +376,16 @@ mod shell_jobs {
 
     static JOBS: LazyLock<Mutex<HashMap<u32, Job>>> = LazyLock::new(Default::default);
 
-    pub fn track(pid: u32, process: std::os::windows::io::RawHandle) {
-        let Ok(job) = Job::create() else { return };
-        if job.assign_process(process as isize).is_ok() {
-            JOBS.lock().unwrap().insert(pid, job);
+    /// Put a shell spawned with `CREATE_SUSPENDED` in its own job, then let it
+    /// run: no descendant can start outside the job. A shell that gets no job
+    /// still runs, and cancelling it falls back to `taskkill`.
+    pub fn start(pid: u32, process: std::os::windows::io::RawHandle) -> Result<(), String> {
+        if let Ok(job) = Job::create() {
+            if job.assign_process(process as isize).is_ok() {
+                JOBS.lock().unwrap().insert(pid, job);
+            }
         }
+        rpi_plugin_sdk::process::resume_child(pid)
     }
 
     /// End every process in `pid`'s job: arm kill-on-close, then drop the only
@@ -961,8 +966,9 @@ impl Shell for OsExecutionEnv {
         }
         #[cfg(windows)]
         {
-            use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
-            cmd.creation_flags(CREATE_NO_WINDOW);
+            use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED};
+            // Suspended until it is in its job (see `shell_jobs::start`).
+            cmd.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
         }
 
         // Args: stdin transport → `bash -s` (no command argv); argv → append.
@@ -982,11 +988,24 @@ impl Shell for OsExecutionEnv {
             }
         };
         let pid = child.id();
-        if let Some(pid) = pid {
-            #[cfg(windows)]
-            if let Some(process) = child.raw_handle() {
-                shell_jobs::track(pid, process);
+        #[cfg(windows)]
+        {
+            let started = match (pid, child.raw_handle()) {
+                (Some(pid), Some(process)) => shell_jobs::start(pid, process),
+                _ => Err("the shell has no process handle".to_owned()),
+            };
+            if let Err(error) = started {
+                if let Some(pid) = pid {
+                    shell_jobs::forget(pid);
+                }
+                let _ = child.start_kill();
+                return Err(ExecutionError::new(
+                    ExecutionErrorCode::SpawnError,
+                    format!("failed to start shell: {error}"),
+                ));
             }
+        }
+        if let Some(pid) = pid {
             self.active_pids.lock().await.insert(pid);
         }
 

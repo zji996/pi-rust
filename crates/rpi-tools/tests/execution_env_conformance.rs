@@ -162,27 +162,40 @@ async fn os_cancel_reaches_the_children_of_git_bash() {
     let env = OsExecutionEnv::with_cwd(tmp.path().to_path_buf());
     let marker = tmp.path().join("winpid");
     let cancel = CancellationToken::new();
-    let cancel_after_start = cancel.clone();
-
-    let cancel_task = async {
-        let winpid = loop {
-            match std::fs::read_to_string(&marker) {
-                Ok(pid) if !pid.trim().is_empty() => break pid.trim().to_owned(),
-                _ => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
-            }
-        };
-        cancel_after_start.cancel();
-        winpid
-    };
-    let exec_task = env.exec(
-        "sleep 30 & cat /proc/$!/winpid > winpid; wait",
+    // Only MSYS bash has `/proc/<pid>/winpid`; any other shell ends at once.
+    let exec = env.exec(
+        "sleep 30 & p=$!; if [ -r /proc/$p/winpid ]; then cat /proc/$p/winpid > winpid; wait; \
+         else kill $p; fi",
         ShellExecOptions {
             cancel: Some(&cancel),
             ..Default::default()
         },
     );
-    let (winpid, result) = tokio::join!(cancel_task, exec_task);
-    assert_eq!(result.unwrap_err().code, ExecutionErrorCode::Aborted);
+    tokio::pin!(exec);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let winpid = loop {
+        tokio::select! {
+            result = &mut exec => match result {
+                Err(error) if error.code != ExecutionErrorCode::ShellUnavailable => {
+                    panic!("shell failed before its child started: {error:?}")
+                }
+                _ => return,
+            },
+            _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+        }
+        match std::fs::read_to_string(&marker) {
+            Ok(pid) if !pid.trim().is_empty() => break pid.trim().to_owned(),
+            _ if std::time::Instant::now() > deadline => {
+                cancel.cancel();
+                let _ = exec.await;
+                panic!("the shell never reported its child");
+            }
+            _ => {}
+        }
+    };
+    cancel.cancel();
+    assert_eq!(exec.await.unwrap_err().code, ExecutionErrorCode::Aborted);
 
     let list = std::process::Command::new("tasklist")
         .args(["/NH", "/FO", "CSV", "/FI", &format!("PID eq {winpid}")])
