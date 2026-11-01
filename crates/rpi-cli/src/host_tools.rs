@@ -125,7 +125,7 @@ impl HostToolContentBlock {
             HostToolContentBlock::Image { data, mime_type } => {
                 TextContentOrImage::Image(rpi_ai::types::ImageContent {
                     kind: rpi_ai::types::ImageContentType,
-                    data,
+                    data: data.into(),
                     mime_type,
                 })
             }
