@@ -154,6 +154,46 @@ async fn os_cancel_interrupts_even_when_timeout_is_set() {
     );
 }
 
+/// `taskkill /T` follows parent pids, and an MSYS child is not on that chain.
+#[cfg(windows)]
+#[tokio::test]
+async fn os_cancel_reaches_the_children_of_git_bash() {
+    let tmp = tempfile::tempdir().unwrap();
+    let env = OsExecutionEnv::with_cwd(tmp.path().to_path_buf());
+    let marker = tmp.path().join("winpid");
+    let cancel = CancellationToken::new();
+    let cancel_after_start = cancel.clone();
+
+    let cancel_task = async {
+        let winpid = loop {
+            match std::fs::read_to_string(&marker) {
+                Ok(pid) if !pid.trim().is_empty() => break pid.trim().to_owned(),
+                _ => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+            }
+        };
+        cancel_after_start.cancel();
+        winpid
+    };
+    let exec_task = env.exec(
+        "sleep 30 & cat /proc/$!/winpid > winpid; wait",
+        ShellExecOptions {
+            cancel: Some(&cancel),
+            ..Default::default()
+        },
+    );
+    let (winpid, result) = tokio::join!(cancel_task, exec_task);
+    assert_eq!(result.unwrap_err().code, ExecutionErrorCode::Aborted);
+
+    let list = std::process::Command::new("tasklist")
+        .args(["/NH", "/FO", "CSV", "/FI", &format!("PID eq {winpid}")])
+        .output()
+        .unwrap();
+    assert!(
+        !String::from_utf8_lossy(&list.stdout).contains(&format!("\"{winpid}\"")),
+        "sleep {winpid} outlived the cancelled shell"
+    );
+}
+
 #[tokio::test]
 async fn os_append_returns_only_after_new_bytes_are_visible() {
     let tmp = tempfile::tempdir().unwrap();
