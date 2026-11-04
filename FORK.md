@@ -14,7 +14,9 @@ upstream would also want goes upstream as a PR first.
 ## Branches and tags
 
 - `main` mirrors upstream `main`; nothing is committed to it here.
-- `aia` is an upstream release tag (now `v0.16.0`) plus the patches below, one commit each.
+- `aia` is an upstream release tag plus the patches below, one commit each. Now it sits on upstream
+  `main` at `5d04ed5` (2026-11-03): no release after `v0.16.0` yet, and `main` already carries
+  #223–#225; the tag stays `v0.16.0-aia.<n>` until upstream cuts the next version.
 - Releases are tagged `v<upstream version>-aia.<n>` (for example `v0.11.0-aia.1`) and publish
   `rpi-<tag>-x86_64-unknown-linux-gnu.tar.gz` and (from `v0.11.0-aia.3`)
   `rpi-<tag>-x86_64-pc-windows-msvc.zip`, each with its `.sha256`.
@@ -28,9 +30,7 @@ upstream would also want goes upstream as a PR first.
 | Tool schemas carry no developer notes | struct doc comments ("Mirrors TS `ReadToolInput`") were sent to the model as schema descriptions on every request |
 | `get_messages` compaction rows carry `summary` (the recap text) | the summary existed only in the session file, so a client could mark a compaction point but not show what the model reads instead; mu desktop opens it from the timeline seam. General: to be offered upstream |
 | Native `google-generative-ai` provider (`crates/rpi-ai/src/providers/google/`, registered in `crates/rpi-runtime/src/provider/factories.rs`) | `Api::GoogleGenerativeAi` existed as a name only, so a `models.json` entry with `api: "google-generative-ai"` resolved to `UnsupportedApi` and Gemini models were unusable. Ported from upstream's `api/google-generative-ai.ts` + `api/google-shared.ts` (streaming, thinking levels/budgets, function calls with thought-signature replay, usage/finish-reason mapping). Upstream already has this feature in TypeScript, so this is a port rather than a new patch — nothing to send upstream unless the Rust port is wanted there |
-| Windows shell trees die through a job object ([#223](https://github.com/bigfish1913/pi-rust/pull/223)) | `taskkill /T` misses the children of Git Bash: a stopped command kept running and cancelling waited out its pipes; drop on follow once upstream has it |
-| Retired assistant frames leave memory ([#224](https://github.com/bigfish1913/pi-rust/pull/224)) | every stream delta stays in `SessionState` as one record, about 12 MB in a long streamed turn; drop on follow once upstream has it |
-| Image data is shared between message copies ([#225](https://github.com/bigfish1913/pi-rust/pull/225)) | `ImageContent.data` as `Arc<str>`: each layer's deep copy of a base64 image multiplied RSS; drop on follow once upstream has it |
+| JSON floats parse exactly (serde_json `float_roundtrip`, [#239](https://github.com/bigfish1913/pi-rust/pull/239)) | upstream `main` checks a run's terminal assistant against the entry read back from the session, and about one usage cost in ten (`0.00020879999999999998`) parses back 1 ulp off, so `rpi -p` failed with `terminal assistant was not committed`; drop on follow once upstream has it |
 | Host-handled state paths (`--host-state <prefix>`, `crates/rpi-cli/src/host_state.rs`, the `host_state_result`/`host_state_config` commands and the `host_state_call`/`host_state_cancelled` events) | mu keeps plugin state (`ask`, `plan`) in memory, not on disk, and the model has to reach it with the ordinary tools: writing `.mu/state/ask/<topic>.md` must create a card, not a file. With `--host-state .mu/state`, `read`/`write`/`edit`/`ls` calls whose `path` normalizes inside the prefix never touch the disk — the call becomes a `host_state_call` event settled by a `host_state_result` command, an abort (or a 30-second timeout, raised per path by `host_state_config`) emits `host_state_cancelled`, and the tool list, schemas and every other path stay byte for byte upstream's (tests lock `ready`). RPC mode only, off by default, so delegate's binary is unaffected. Protocol of record: [docs/host-state.md](docs/host-state.md) |
 | `systemPromptIntro` (string) and `systemPromptGuidelines` (string array) in `settings.json` (`crates/rpi-cli/src/session.rs`) | mu desktop drives rpi over `--mode rpc` and the agent directory's `settings.json` is the only channel it writes, so the prompt's opening identity and mu's own rules have to be settings rather than a `--system-prompt` file mu would have to keep in sync. `systemPromptIntro` replaces the first paragraph of the built-in prompt, `systemPromptGuidelines` are appended to the end of `Guidelines` with the same trim/dedupe the core rules get; both unset, the prompt is upstream's byte for byte (a test locks the default text). `--debug-system-prompt` prints the result |
 | `toolResultNotes` (bool) in `settings.json` (`crates/rpi-tools/src/tools/bash.rs`) | a bash result that fails reads as a prose sentence (`Command exited with code 7`) glued to the output, so mu's timeline cannot tell the model's failure note from the command's own output and the model re-reads the whole tail to find the reason. With the setting on, the status becomes a trailing bracket note — `[exit code N]`, `[terminated by signal N]` (needs the new `ShellOutput.signal`, since a signal kill collapses to exit 0), `[cancelled]` — while the output stays intact and the result is still an error. Off, the text is upstream's byte for byte |
@@ -47,7 +47,8 @@ pipe drain, [#163](https://github.com/bigfish1913/pi-rust/pull/163); 0.14.0 took
 [#168](https://github.com/bigfish1913/pi-rust/pull/168)–[#170](https://github.com/bigfish1913/pi-rust/pull/170);
 0.16.0 took shell output decoding, [#177](https://github.com/bigfish1913/pi-rust/pull/177), and
 external tools over RPC, [#193](https://github.com/bigfish1913/pi-rust/pull/193), which replaced
-our `--host-tools`).
+our `--host-tools`; `main` after 0.16.0 took the Windows job-object kill, retired frames leaving
+memory and shared image data, [#223](https://github.com/bigfish1913/pi-rust/pull/223)–[#225](https://github.com/bigfish1913/pi-rust/pull/225)).
 
 ## Following upstream
 
