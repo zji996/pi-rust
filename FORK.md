@@ -14,9 +14,7 @@ upstream would also want goes upstream as a PR first.
 ## Branches and tags
 
 - `main` mirrors upstream `main`; nothing is committed to it here.
-- `aia` is an upstream release tag plus the patches below, one commit each. Now it sits on upstream
-  `main` at `5d04ed5` (2026-11-03): no release after `v0.16.0` yet, and `main` already carries
-  #223–#225; the tag stays `v0.16.0-aia.<n>` until upstream cuts the next version.
+- `aia` is an upstream release tag plus the patches below, one commit each. Now it sits on `v0.20.0`.
 - Releases are tagged `v<upstream version>-aia.<n>` (for example `v0.11.0-aia.1`) and publish
   `rpi-<tag>-x86_64-unknown-linux-gnu.tar.gz` and (from `v0.11.0-aia.3`)
   `rpi-<tag>-x86_64-pc-windows-msvc.zip`, each with its `.sha256`.
@@ -30,7 +28,6 @@ upstream would also want goes upstream as a PR first.
 | Tool schemas carry no developer notes | struct doc comments ("Mirrors TS `ReadToolInput`") were sent to the model as schema descriptions on every request |
 | `get_messages` compaction rows carry `summary` (the recap text) | the summary existed only in the session file, so a client could mark a compaction point but not show what the model reads instead; mu desktop opens it from the timeline seam. General: to be offered upstream |
 | Native `google-generative-ai` provider (`crates/rpi-ai/src/providers/google/`, registered in `crates/rpi-runtime/src/provider/factories.rs`) | `Api::GoogleGenerativeAi` existed as a name only, so a `models.json` entry with `api: "google-generative-ai"` resolved to `UnsupportedApi` and Gemini models were unusable. Ported from upstream's `api/google-generative-ai.ts` + `api/google-shared.ts` (streaming, thinking levels/budgets, function calls with thought-signature replay, usage/finish-reason mapping). Upstream already has this feature in TypeScript, so this is a port rather than a new patch — nothing to send upstream unless the Rust port is wanted there |
-| JSON floats parse exactly (serde_json `float_roundtrip`, [#239](https://github.com/bigfish1913/pi-rust/pull/239)) | upstream `main` checks a run's terminal assistant against the entry read back from the session, and about one usage cost in ten (`0.00020879999999999998`) parses back 1 ulp off, so `rpi -p` failed with `terminal assistant was not committed`; drop on follow once upstream has it |
 | Plugins can rewrite a finished tool result (`register_tool_result`, [#240](https://github.com/bigfish1913/pi-rust/pull/240)) | mu-desktop's `mu-images` extension swaps PNG screenshots for WebP before they enter the session (a real session file: 548 KB → 108 KB); without a registered handler no tool is wrapped; drop on follow once upstream has it |
 | `read` resizes with `fast_image_resize` ([#241](https://github.com/bigfish1913/pi-rust/pull/241)) | same Lanczos3 with SIMD: a 4K screenshot read 104 → 20 ms, a `readImageDraft` draft resize 16 → 2 ms; on `aia` this commit also points the draft resize at `resize_exact` — on follow, drop the commit and keep that one line in the `readImageDraft` patch |
 | Host-handled state paths (`--host-state <prefix>`, `crates/rpi-cli/src/host_state.rs`, the `host_state_result`/`host_state_config` commands and the `host_state_call`/`host_state_cancelled` events) | mu keeps plugin state (`ask`, `plan`) in memory, not on disk, and the model has to reach it with the ordinary tools: writing `.mu/state/ask/<topic>.md` must create a card, not a file. With `--host-state .mu/state`, `read`/`write`/`edit`/`ls` calls whose `path` normalizes inside the prefix never touch the disk — the call becomes a `host_state_call` event settled by a `host_state_result` command, an abort (or a 30-second timeout, raised per path by `host_state_config`) emits `host_state_cancelled`, and the tool list, schemas and every other path stay byte for byte upstream's (tests lock `ready`). RPC mode only, off by default, so delegate's binary is unaffected. Protocol of record: [docs/host-state.md](docs/host-state.md) |
@@ -50,7 +47,8 @@ pipe drain, [#163](https://github.com/bigfish1913/pi-rust/pull/163); 0.14.0 took
 0.16.0 took shell output decoding, [#177](https://github.com/bigfish1913/pi-rust/pull/177), and
 external tools over RPC, [#193](https://github.com/bigfish1913/pi-rust/pull/193), which replaced
 our `--host-tools`; `main` after 0.16.0 took the Windows job-object kill, retired frames leaving
-memory and shared image data, [#223](https://github.com/bigfish1913/pi-rust/pull/223)–[#225](https://github.com/bigfish1913/pi-rust/pull/225)).
+memory and shared image data, [#223](https://github.com/bigfish1913/pi-rust/pull/223)–[#225](https://github.com/bigfish1913/pi-rust/pull/225);
+0.17.2 took exact JSON float parsing, [#239](https://github.com/bigfish1913/pi-rust/pull/239)).
 
 ## Following upstream
 
